@@ -1,19 +1,18 @@
 """
 Financial Close Agent API - FastAPI Implementation
-Provides endpoints for all financial close tasks
+SINGLE ENDPOINT: Triggers complete financial close pipeline
+Reads from predefined local files, no upload functionality
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
 import logging
-import shutil
 import json
 import uuid
 from pathlib import Path
@@ -21,23 +20,17 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION - EXACTLY MATCHING YOUR SCRIPT
 # ============================================================================
 
 class Config:
-    """Configuration settings for the API"""
-    BASE_DIR = Path("financial_close_data")
-    UPLOAD_DIR = BASE_DIR / "uploads"
-    MASTER_DATA_DIR = BASE_DIR / "master_data"
-    REFERENCE_DIR = BASE_DIR / "reference"
-    BUDGET_DIR = BASE_DIR / "budget"
-    WORKING_DIR = BASE_DIR / "working"
-    REPORTS_DIR = BASE_DIR / "reports"
-    
-    # Create directories
-    for dir_path in [UPLOAD_DIR, MASTER_DATA_DIR, REFERENCE_DIR, 
-                     BUDGET_DIR, WORKING_DIR, REPORTS_DIR]:
-        dir_path.mkdir(parents=True, exist_ok=True)
+    """Configuration settings matching the original script"""
+    RAW_DATA_PATH = "Raw_GL_Export.csv"
+    MASTER_DATA_PATH = "Master_Data/"
+    REFERENCE_PATH = "Reference/"
+    BUDGET_PATH = "Budget/"
+    OUTPUT_PATH = "working/"
+    REPORTS_PATH = "reports/"
     
     # Fiscal period settings
     CURRENT_FISCAL_PERIOD = "2026-02"
@@ -50,48 +43,9 @@ class Config:
     SUSPICIOUS_HOUR_START = 22
     SUSPICIOUS_HOUR_END = 6
 
-# ============================================================================
-# PYDANTIC MODELS
-# ============================================================================
-
-class ProcessingResponse(BaseModel):
-    """Base response model for processing tasks"""
-    task_id: str
-    status: str
-    message: str
-    data_paths: Optional[Dict[str, str]] = None
-    summary: Optional[Dict[str, Any]] = None
-
-class AnomalyItem(BaseModel):
-    transaction_id: str
-    anomaly_type: str
-    severity: str
-    description: str
-    amount: Optional[float] = None
-    vendor: Optional[str] = None
-    account: Optional[str] = None
-
-class VarianceSummary(BaseModel):
-    total_actual: float
-    total_budget: float
-    total_variance: float
-    total_variance_pct: float
-    suspense_amount: float
-    future_dated_amount: float
-    transaction_count: int
-    exception_count: int
-
-class ForecastResponse(BaseModel):
-    next_period: str
-    forecast_amount: float
-    lower_bound: float
-    upper_bound: float
-    confidence_level: float
-    method: str
-
-class NarrativeResponse(BaseModel):
-    narrative: str
-    file_path: str
+# Create directories if they don't exist
+for path in [Config.OUTPUT_PATH, Config.REPORTS_PATH]:
+    Path(path).mkdir(parents=True, exist_ok=True)
 
 # ============================================================================
 # FASTAPI APP SETUP
@@ -99,7 +53,7 @@ class NarrativeResponse(BaseModel):
 
 app = FastAPI(
     title="Financial Close Agent API",
-    description="Automated financial close processing pipeline",
+    description="Single endpoint triggers complete financial close pipeline - reads from local files",
     version="1.0.0"
 )
 
@@ -113,66 +67,100 @@ app.add_middleware(
 )
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# PYDANTIC MODELS
 # ============================================================================
 
-def generate_task_id():
-    """Generate unique task ID"""
-    return f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+class PipelineResponse(BaseModel):
+    """Response model for pipeline execution"""
+    run_id: str
+    status: str
+    message: str
+    start_time: str
+    summary: Optional[Dict[str, Any]] = None
 
-def save_upload_file(upload_file: UploadFile, destination: Path) -> str:
-    """Save uploaded file to destination"""
-    file_path = destination / upload_file.filename
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(upload_file.file, buffer)
-    return str(file_path)
-
-def load_dataframe(file_path: str) -> pd.DataFrame:
-    """Load CSV file into DataFrame"""
-    return pd.read_csv(file_path)
+class PipelineStatus(BaseModel):
+    """Status model for pipeline run"""
+    run_id: str
+    status: str
+    progress: int
+    current_task: str
+    start_time: str
+    end_time: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    summary: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
 
 # ============================================================================
-# BACKGROUND TASK PROCESSOR
+# BACKGROUND TASK MANAGER
 # ============================================================================
 
-class TaskManager:
-    """Manage background tasks and store results"""
+class PipelineManager:
+    """Manage pipeline runs"""
     
     def __init__(self):
-        self.tasks = {}
+        self.runs = {}
     
-    def create_task(self, task_id: str, task_type: str):
-        """Create a new task"""
-        self.tasks[task_id] = {
-            "task_id": task_id,
-            "task_type": task_type,
-            "status": "pending",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-            "result": None,
+    def create_run(self, run_id: str):
+        """Create a new pipeline run"""
+        self.runs[run_id] = {
+            "run_id": run_id,
+            "status": "starting",
+            "progress": 0,
+            "current_task": "initializing",
+            "start_time": datetime.now().isoformat(),
+            "end_time": None,
+            "duration_seconds": None,
+            "summary": None,
             "error": None
         }
-        return task_id
+        return run_id
     
-    def update_task(self, task_id: str, status: str, result: Any = None, error: str = None):
-        """Update task status"""
-        if task_id in self.tasks:
-            self.tasks[task_id].update({
-                "status": status,
-                "updated_at": datetime.now().isoformat(),
-                "result": result,
-                "error": error
+    def update_run(self, run_id: str, **kwargs):
+        """Update pipeline run status"""
+        if run_id in self.runs:
+            self.runs[run_id].update(kwargs)
+    
+    def get_run(self, run_id: str):
+        """Get pipeline run by ID"""
+        return self.runs.get(run_id)
+    
+    def complete_run(self, run_id: str, summary: Dict[str, Any]):
+        """Mark run as completed"""
+        if run_id in self.runs:
+            end_time = datetime.now()
+            start_time = datetime.fromisoformat(self.runs[run_id]["start_time"])
+            duration = (end_time - start_time).total_seconds()
+            
+            self.runs[run_id].update({
+                "status": "completed",
+                "progress": 100,
+                "current_task": "complete",
+                "end_time": end_time.isoformat(),
+                "duration_seconds": duration,
+                "summary": summary
             })
     
-    def get_task(self, task_id: str):
-        """Get task by ID"""
-        return self.tasks.get(task_id)
-    
-    def get_all_tasks(self):
-        """Get all tasks"""
-        return list(self.tasks.values())
+    def fail_run(self, run_id: str, error: str):
+        """Mark run as failed"""
+        if run_id in self.runs:
+            end_time = datetime.now()
+            start_time = datetime.fromisoformat(self.runs[run_id]["start_time"])
+            duration = (end_time - start_time).total_seconds()
+            
+            self.runs[run_id].update({
+                "status": "failed",
+                "progress": self.runs[run_id].get("progress", 0),
+                "current_task": self.runs[run_id].get("current_task", "unknown"),
+                "end_time": end_time.isoformat(),
+                "duration_seconds": duration,
+                "error": error
+            })
 
-task_manager = TaskManager()
+pipeline_manager = PipelineManager()
+
+def generate_run_id():
+    """Generate unique run ID"""
+    return f"close_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 # ============================================================================
 # T001: WRANGLE RAW GL DATA
@@ -181,90 +169,47 @@ task_manager = TaskManager()
 class T001_DataWrangler:
     """Task 1: Parse and standardize raw GL export data"""
     
-    def __init__(self, file_path: str, task_id: str):
-        self.file_path = file_path
-        self.task_id = task_id
+    def __init__(self):
         self.raw_df = None
         self.standardized_df = None
         self.anomaly_log = []
         
-    def run(self):
-        """Execute all T001 steps"""
-        try:
-            # Load data
-            self.raw_df = pd.read_csv(self.file_path)
-            
-            # Standardize column names
-            column_mapping = {
-                'Txn_ID': 'transaction_id',
-                'Posting_Date_Raw': 'posting_date_raw',
-                'Invoice_Date_Raw': 'invoice_date_raw',
-                'Fiscal_Period': 'fiscal_period',
-                'Entity': 'entity_code',
-                'Account_Code_Raw': 'account_code_raw',
-                'Cost_Center_Raw': 'cost_center_raw',
-                'Vendor_Name_Raw': 'vendor_name_raw',
-                'Invoice_Number': 'invoice_number',
-                'PO_Number': 'po_number',
-                'Currency': 'currency_code',
-                'Amount': 'amount_raw',
-                'Tax_Code': 'tax_code',
-                'Narrative': 'narrative',
-                'Source_System': 'source_system'
-            }
-            
-            # Only rename columns that exist
-            rename_dict = {k: v for k, v in column_mapping.items() if k in self.raw_df.columns}
-            self.standardized_df = self.raw_df.rename(columns=rename_dict)
-            
-            # Standardize dates
-            self._standardize_dates()
-            
-            # Clean amounts
-            self._clean_amounts()
-            
-            # Extract fiscal year and month
-            self.standardized_df['fiscal_year'] = self.standardized_df['fiscal_period'].str[:4]
-            self.standardized_df['fiscal_month'] = self.standardized_df['fiscal_period'].str[-2:]
-            
-            # Detect embedded exceptions
-            self._detect_embedded_exceptions()
-            
-            # Add metadata
-            self.standardized_df['processing_timestamp'] = datetime.now()
-            self.standardized_df['source_file'] = os.path.basename(self.file_path)
-            self.standardized_df['data_quality_score'] = 100 - (len(self.anomaly_log) / len(self.standardized_df) * 100) if len(self.standardized_df) > 0 else 100
-            self.standardized_df['anomaly_count'] = self.standardized_df.apply(
-                lambda row: len([a for a in self.anomaly_log if a.get('transaction_id') == row['transaction_id']]), axis=1
-            )
-            
-            # Save outputs
-            output_path = Config.WORKING_DIR / f"GL_Standardized_{self.task_id}.csv"
-            self.standardized_df.to_csv(output_path, index=False)
-            
-            anomalies_path = Config.REPORTS_DIR / f"Input_Anomalies_{self.task_id}.csv"
-            if self.anomaly_log:
-                pd.DataFrame(self.anomaly_log).to_csv(anomalies_path, index=False)
-            
-            return {
-                "status": "success",
-                "rows_processed": len(self.standardized_df),
-                "anomalies_found": len(self.anomaly_log),
-                "output_files": {
-                    "standardized_data": str(output_path),
-                    "anomalies": str(anomalies_path) if self.anomaly_log else None
-                }
-            }
-            
-        except Exception as e:
-            raise Exception(f"T001 failed: {str(e)}")
+    def load_raw_data(self, filepath):
+        """Load raw CSV file"""
+        print("📂 T001: Loading raw GL data...")
+        self.raw_df = pd.read_csv(filepath)
+        print(f"   Loaded {len(self.raw_df)} rows")
+        return self
     
-    def _standardize_dates(self):
-        """Convert all dates to consistent format"""
+    def standardize_column_names(self):
+        """Convert column names to snake_case"""
+        column_mapping = {
+            'Txn_ID': 'transaction_id',
+            'Posting_Date_Raw': 'posting_date_raw',
+            'Invoice_Date_Raw': 'invoice_date_raw',
+            'Fiscal_Period': 'fiscal_period',
+            'Entity': 'entity_code',
+            'Account_Code_Raw': 'account_code_raw',
+            'Cost_Center_Raw': 'cost_center_raw',
+            'Vendor_Name_Raw': 'vendor_name_raw',
+            'Invoice_Number': 'invoice_number',
+            'PO_Number': 'po_number',
+            'Currency': 'currency_code',
+            'Amount': 'amount_raw',
+            'Tax_Code': 'tax_code',
+            'Narrative': 'narrative',
+            'Source_System': 'source_system'
+        }
+        self.standardized_df = self.raw_df.rename(columns=column_mapping)
+        print("   ✓ Column names standardized")
+        return self
+    
+    def standardize_dates(self):
+        """Convert all dates to consistent format YYYY-MM-DD"""
         df = self.standardized_df
         
         def parse_date(date_str, txn_id, column_name):
-            if pd.isna(date_str) or date_str in ['INVALID', '99/99/9999', '32/13/2026']:
+            if pd.isna(date_str) or date_str in ['INVALID', '99/99/9999', '32/13/2026', '2026-13-45']:
                 self.anomaly_log.append({
                     'transaction_id': txn_id,
                     'anomaly_type': 'INVALID_DATE',
@@ -274,14 +219,19 @@ class T001_DataWrangler:
                 })
                 return None
             
-            formats = ['%d-%m-%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y',
-                      '%d/%m/%y', '%m/%d/%y', '%d-%m-%y', '%y-%m-%d']
+            # Try different date formats
+            formats = [
+                '%d-%m-%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y',
+                '%d/%m/%y', '%m/%d/%y', '%d-%m-%y', '%y-%m-%d'
+            ]
+            
             for fmt in formats:
                 try:
                     return datetime.strptime(str(date_str), fmt)
                 except:
                     continue
             
+            # If all formats fail
             self.anomaly_log.append({
                 'transaction_id': txn_id,
                 'anomaly_type': 'UNPARSABLE_DATE',
@@ -291,19 +241,40 @@ class T001_DataWrangler:
             })
             return None
         
-        if 'posting_date_raw' in df.columns:
-            df['posting_date'] = df.apply(
-                lambda row: parse_date(row['posting_date_raw'], row['transaction_id'], 'posting_date_raw'), 
-                axis=1
-            )
+        # Apply date parsing with transaction_id
+        df['posting_date'] = df.apply(
+            lambda row: parse_date(row['posting_date_raw'], row['transaction_id'], 'posting_date_raw'), 
+            axis=1
+        )
+        df['invoice_date'] = df.apply(
+            lambda row: parse_date(row['invoice_date_raw'], row['transaction_id'], 'invoice_date_raw'), 
+            axis=1
+        )
         
-        if 'invoice_date_raw' in df.columns:
-            df['invoice_date'] = df.apply(
-                lambda row: parse_date(row['invoice_date_raw'], row['transaction_id'], 'invoice_date_raw'), 
-                axis=1
-            )
+        # Extract fiscal year and month
+        df['fiscal_year'] = df['fiscal_period'].str[:4]
+        df['fiscal_month'] = df['fiscal_period'].str[-2:]
+        
+        # Check fiscal period consistency
+        for idx, row in df.iterrows():
+            if pd.notna(row['posting_date']):
+                posting_month = row['posting_date'].month
+                fiscal_month = int(row['fiscal_month']) if pd.notna(row['fiscal_month']) else None
+                
+                if fiscal_month and posting_month != fiscal_month:
+                    self.anomaly_log.append({
+                        'transaction_id': row['transaction_id'],
+                        'anomaly_type': 'FISCAL_PERIOD_MISMATCH',
+                        'severity': 'HIGH',
+                        'description': f"Posting date month ({posting_month}) != fiscal period month ({fiscal_month})",
+                        'posting_date': row['posting_date'],
+                        'fiscal_period': row['fiscal_period']
+                    })
+        
+        print(f"   ✓ Dates standardized. Invalid dates: {sum(df['posting_date'].isna())}")
+        return self
     
-    def _clean_amounts(self):
+    def clean_amounts(self):
         """Convert amount strings to floats"""
         df = self.standardized_df
         
@@ -311,7 +282,10 @@ class T001_DataWrangler:
             if pd.isna(amt_str):
                 return None
             
+            # Remove currency symbols, commas, spaces
             cleaned = str(amt_str).replace('$', '').replace(',', '').strip()
+            
+            # Handle negative numbers in parentheses
             if cleaned.startswith('(') and cleaned.endswith(')'):
                 cleaned = '-' + cleaned[1:-1]
             
@@ -326,29 +300,115 @@ class T001_DataWrangler:
                 })
                 return None
         
-        if 'amount_raw' in df.columns:
-            df['amount'] = df.apply(
-                lambda row: parse_amount(row['amount_raw'], row['transaction_id']), 
-                axis=1
-            )
-            df['amount_is_negative'] = df['amount'] < 0
+        df['amount'] = df.apply(
+            lambda row: parse_amount(row['amount_raw'], row['transaction_id']), 
+            axis=1
+        )
+        
+        # Flag negative amounts
+        df['amount_is_negative'] = df['amount'] < 0
+        for idx, row in df[df['amount_is_negative']].iterrows():
+            self.anomaly_log.append({
+                'transaction_id': row['transaction_id'],
+                'anomaly_type': 'NEGATIVE_AMOUNT',
+                'severity': 'MEDIUM',
+                'description': f"Negative amount: {row['amount']}",
+                'amount': row['amount']
+            })
+        
+        print(f"   ✓ Amounts cleaned. Negative amounts: {df['amount_is_negative'].sum()}")
+        return self
     
-    def _detect_embedded_exceptions(self):
+    def detect_embedded_exceptions(self):
         """Look for obvious exceptions in raw data"""
         df = self.standardized_df
         keywords = ['error', 'flag', 'review', 'urgent', 'exception', 'invalid']
         
-        if 'narrative' in df.columns:
-            df['narrative_lower'] = df['narrative'].str.lower().fillna('')
+        df['narrative_lower'] = df['narrative'].str.lower().fillna('')
+        
+        for idx, row in df.iterrows():
+            # Check narrative for keywords
+            if any(keyword in str(row['narrative_lower']) for keyword in keywords):
+                self.anomaly_log.append({
+                    'transaction_id': row['transaction_id'],
+                    'anomaly_type': 'NARRATIVE_SUGGESTS_EXCEPTION',
+                    'severity': 'MEDIUM',
+                    'description': f"Narrative contains exception keywords: {row['narrative']}",
+                    'narrative': row['narrative']
+                })
             
-            for idx, row in df.iterrows():
-                if any(keyword in str(row['narrative_lower']) for keyword in keywords):
-                    self.anomaly_log.append({
-                        'transaction_id': row['transaction_id'],
-                        'anomaly_type': 'NARRATIVE_SUGGESTS_EXCEPTION',
-                        'severity': 'MEDIUM',
-                        'description': f"Narrative contains exception keywords: {row['narrative']}"
-                    })
+            # Check for placeholder vendor names
+            if row['vendor_name_raw'] in ['Unlisted Company', 'Unknown Vendor LLC', 
+                                           'New Vendor XYZ', 'Unregistered Supplier', 
+                                           'Mystery Corp']:
+                self.anomaly_log.append({
+                    'transaction_id': row['transaction_id'],
+                    'anomaly_type': 'PLACEHOLDER_VENDOR',
+                    'severity': 'HIGH',
+                    'description': f"Placeholder vendor name: {row['vendor_name_raw']}",
+                    'vendor': row['vendor_name_raw']
+                })
+        
+        print(f"   ✓ Embedded exceptions detected: {len([a for a in self.anomaly_log if a['anomaly_type'] == 'NARRATIVE_SUGGESTS_EXCEPTION'])}")
+        return self
+    
+    def add_metadata(self):
+        """Add processing metadata"""
+        df = self.standardized_df
+        df['processing_timestamp'] = datetime.now()
+        df['source_file'] = 'Raw_GL_Export.csv'
+        df['data_quality_score'] = 100 - (len(self.anomaly_log) / len(df) * 100) if len(df) > 0 else 100
+        df['anomaly_count'] = df.apply(lambda row: len([a for a in self.anomaly_log 
+                                                          if a.get('transaction_id') == row['transaction_id']]), axis=1)
+        return self
+    
+    def save_output(self):
+        """Save standardized data and anomaly log"""
+        os.makedirs(Config.OUTPUT_PATH, exist_ok=True)
+        os.makedirs(Config.REPORTS_PATH, exist_ok=True)
+        
+        # Save standardized data
+        output_cols = ['transaction_id', 'posting_date_raw', 'posting_date', 'invoice_date_raw',
+                       'invoice_date', 'fiscal_period', 'fiscal_year', 'fiscal_month',
+                       'entity_code', 'account_code_raw', 'cost_center_raw', 'vendor_name_raw',
+                       'invoice_number', 'po_number', 'currency_code', 'amount_raw', 'amount',
+                       'amount_is_negative', 'tax_code', 'narrative', 'source_system',
+                       'processing_timestamp', 'data_quality_score', 'anomaly_count']
+        
+        # Only include columns that exist
+        available_cols = [col for col in output_cols if col in self.standardized_df.columns]
+        self.standardized_df[available_cols].to_csv(
+            f"{Config.OUTPUT_PATH}GL_Standardized.csv", index=False
+        )
+        
+        # Save anomaly log
+        if self.anomaly_log:
+            pd.DataFrame(self.anomaly_log).to_csv(
+                f"{Config.REPORTS_PATH}Input_Anomalies_Detected.csv", index=False
+            )
+        
+        print(f"   💾 Saved {len(self.standardized_df)} rows to {Config.OUTPUT_PATH}GL_Standardized.csv")
+        print(f"   💾 Saved {len(self.anomaly_log)} anomalies to {Config.REPORTS_PATH}Input_Anomalies_Detected.csv")
+        
+        return self.standardized_df, self.anomaly_log
+    
+    def run(self, filepath):
+        """Execute all T001 steps"""
+        print("\n" + "="*60)
+        print("🚀 T001: Wrangling Raw GL Data")
+        print("="*60)
+        
+        self.load_raw_data(filepath)
+        self.standardize_column_names()
+        self.standardize_dates()
+        self.clean_amounts()
+        self.detect_embedded_exceptions()
+        self.add_metadata()
+        df, anomalies = self.save_output()
+        
+        print(f"\n✅ T001 Complete. Processed {len(df)} rows, found {len(anomalies)} anomalies.")
+        return df, anomalies
+
 
 # ============================================================================
 # T002: MAP ENTITIES AND ACCOUNTS
@@ -357,72 +417,77 @@ class T001_DataWrangler:
 class T002_EntityAccountMapper:
     """Task 2: Resolve entity codes and account codes against master data"""
     
-    def __init__(self, df, task_id: str, master_data_dir: Path):
-        self.df = df.copy()
-        self.task_id = task_id
-        self.master_data_dir = master_data_dir
+    def __init__(self, working_df):
+        self.df = working_df.copy()
         self.entity_master = None
         self.account_master = None
         self.cost_center_master = None
         self.mapping_anomalies = []
-        self.output_path = None
         
-    def run(self):
-        """Execute all T002 steps"""
-        try:
-            self.load_master_data()
-            self.map_entities()
-            self.map_accounts()
-            self.map_cost_centers()
-            self.save_output()
-            
-            return {
-                "status": "success",
-                "rows_mapped": len(self.df),
-                "entity_errors": (~self.df['entity_valid']).sum() if 'entity_valid' in self.df.columns else 0,
-                "account_errors": (~self.df['account_valid']).sum() if 'account_valid' in self.df.columns else 0,
-                "cost_center_errors": (~self.df['cost_center_valid'] & self.df['cost_center_present']).sum() if 'cost_center_valid' in self.df.columns else 0,
-                "output_file": str(self.output_path)
-            }
-            
-        except Exception as e:
-            raise Exception(f"T002 failed: {str(e)}")
-    
     def load_master_data(self):
         """Load master reference files"""
+        print("\n📂 T002: Loading master data...")
         
         try:
-            entity_path = self.master_data_dir / "Master_Entity.csv"
-            if entity_path.exists():
-                self.entity_master = pd.read_csv(entity_path)
+            self.entity_master = pd.read_csv(f"{Config.MASTER_DATA_PATH}Master_Entity.csv")
+            print(f"   Loaded {len(self.entity_master)} entities")
         except:
+            print("   ⚠️ Entity master not found, creating default")
             self.entity_master = pd.DataFrame({'entity_code': ['AUS01']})
         
         try:
-            account_path = self.master_data_dir / "Master_COA.csv"
-            if account_path.exists():
-                self.account_master = pd.read_csv(account_path)
-                # Standardize column names
-                self.account_master.columns = [col.lower().strip() for col in self.account_master.columns]
-        except:
+            self.account_master = pd.read_csv(f"{Config.MASTER_DATA_PATH}Master_COA.csv")
+            print(f"   Loaded {len(self.account_master)} accounts")
+            
+            # Standardize column names
+            self.account_master.columns = [col.lower().strip() for col in self.account_master.columns]
+            
+            # Map the account code column
+            if 'account_code' not in self.account_master.columns:
+                if 'account_code' in self.account_master.columns:
+                    self.account_master.rename(columns={'account_code': 'account_code'}, inplace=True)
+                elif 'account' in self.account_master.columns:
+                    self.account_master.rename(columns={'account': 'account_code'}, inplace=True)
+                elif 'code' in self.account_master.columns:
+                    self.account_master.rename(columns={'code': 'account_code'}, inplace=True)
+                else:
+                    first_col = self.account_master.columns[0]
+                    self.account_master.rename(columns={first_col: 'account_code'}, inplace=True)
+            
+        except Exception as e:
+            print(f"   ⚠️ Account master not found: {e}")
             self.account_master = pd.DataFrame({'account_code': [f"{i:04d}" for i in range(5000, 5029)]})
         
         try:
-            cc_path = self.master_data_dir / "Master_CostCenters.csv"
-            if cc_path.exists():
-                self.cost_center_master = pd.read_csv(cc_path)
-                self.cost_center_master.columns = [col.lower().strip() for col in self.cost_center_master.columns]
-        except:
+            self.cost_center_master = pd.read_csv(f"{Config.MASTER_DATA_PATH}Master_CostCenters.csv")
+            print(f"   Loaded {len(self.cost_center_master)} cost centers")
+            
+            self.cost_center_master.columns = [col.lower().strip() for col in self.cost_center_master.columns]
+            
+            if 'cost_center' not in self.cost_center_master.columns:
+                if 'costcenter' in self.cost_center_master.columns:
+                    self.cost_center_master.rename(columns={'costcenter': 'cost_center'}, inplace=True)
+                elif 'cc' in self.cost_center_master.columns:
+                    self.cost_center_master.rename(columns={'cc': 'cost_center'}, inplace=True)
+                else:
+                    first_col = self.cost_center_master.columns[0]
+                    self.cost_center_master.rename(columns={first_col: 'cost_center'}, inplace=True)
+                    
+        except Exception as e:
+            print(f"   ⚠️ Cost center master not found: {e}")
             self.cost_center_master = pd.DataFrame({'cost_center': ['CC' + str(i).zfill(4) for i in range(1000, 1010)]})
         
         return self
     
     def map_entities(self):
         """Map entity codes against master"""
-        if self.entity_master is not None and 'entity_code' in self.entity_master.columns:
-            valid_entities = self.entity_master['entity_code'].tolist()
-        else:
-            valid_entities = ['AUS01']
+        if 'entity_code' not in self.entity_master.columns:
+            for col in self.entity_master.columns:
+                if 'entity' in col.lower() or 'code' in col.lower():
+                    self.entity_master.rename(columns={col: 'entity_code'}, inplace=True)
+                    break
+        
+        valid_entities = self.entity_master['entity_code'].tolist() if 'entity_code' in self.entity_master.columns else ['AUS01']
         
         self.df['entity_valid'] = self.df['entity_code'].isin(valid_entities)
         self.df['entity_code_mapped'] = np.where(
@@ -440,20 +505,21 @@ class T002_EntityAccountMapper:
                 'original_value': row['entity_code']
             })
         
+        print(f"   ✓ Entities mapped. Invalid: {(~self.df['entity_valid']).sum()}")
         return self
     
     def map_accounts(self):
         """Map account codes against master"""
         
-        if self.account_master is not None and 'account_code' in self.account_master.columns:
+        if 'account_code' in self.account_master.columns:
             valid_accounts = [str(acct).strip() for acct in self.account_master['account_code'].tolist()]
+            valid_accounts = list(set(valid_accounts))
         else:
             valid_accounts = []
         
         # Clean raw account codes
         self.df['account_code_clean'] = self.df['account_code_raw'].astype(str).str.strip()
         
-        # Try different matching strategies
         self.df['account_valid'] = False
         
         # Direct match
@@ -463,23 +529,6 @@ class T002_EntityAccountMapper:
         # Clean match
         clean_match = (~direct_match) & self.df['account_code_clean'].isin(valid_accounts)
         self.df.loc[clean_match, 'account_valid'] = True
-        
-        # Numeric match
-        if not self.df[~self.df['account_valid']].empty:
-            numeric_valid = []
-            for acct in valid_accounts:
-                try:
-                    numeric_valid.append(float(acct))
-                except:
-                    pass
-            
-            for idx, row in self.df[~self.df['account_valid']].iterrows():
-                try:
-                    raw_num = float(row['account_code_raw'])
-                    if raw_num in numeric_valid:
-                        self.df.at[idx, 'account_valid'] = True
-                except:
-                    pass
         
         # Assign mapped account codes
         def find_matching_account(row):
@@ -494,8 +543,8 @@ class T002_EntityAccountMapper:
         
         self.df['account_code_mapped'] = self.df.apply(find_matching_account, axis=1)
         
-        # Get account names/descriptions if available
-        if self.account_master is not None and 'account_name' in self.account_master.columns:
+        # Get account names if available
+        if 'account_name' in self.account_master.columns:
             account_desc_map = {}
             for _, row in self.account_master.iterrows():
                 acct = str(row['account_code']).strip()
@@ -505,22 +554,23 @@ class T002_EntityAccountMapper:
             self.df['account_description'] = self.df['account_code_mapped'].map(account_desc_map)
         
         # Log anomalies
+        invalid_count = (~self.df['account_valid']).sum()
         for idx, row in self.df[~self.df['account_valid']].iterrows():
-            severity = 'CRITICAL' if str(row['account_code_raw']) == 'INVALID_ACCT' else 'HIGH'
             self.mapping_anomalies.append({
                 'transaction_id': row['transaction_id'],
                 'anomaly_type': 'INVALID_ACCOUNT',
-                'severity': severity,
+                'severity': 'CRITICAL' if str(row['account_code_raw']) == 'INVALID_ACCT' else 'HIGH',
                 'description': f"Account code '{row['account_code_raw']}' not in Chart of Accounts",
                 'original_value': row['account_code_raw'],
                 'amount': row['amount']
             })
         
+        print(f"   ✓ Accounts mapped. Valid: {self.df['account_valid'].sum()}, Invalid: {invalid_count}")
         return self
     
     def map_cost_centers(self):
         """Map cost centers against master"""
-        if self.cost_center_master is not None and 'cost_center' in self.cost_center_master.columns:
+        if 'cost_center' in self.cost_center_master.columns:
             valid_centers = self.cost_center_master['cost_center'].tolist()
         else:
             valid_centers = []
@@ -551,14 +601,42 @@ class T002_EntityAccountMapper:
                 'original_value': row['cost_center_raw']
             })
         
+        print(f"   ✓ Cost centers mapped. Missing: {(~self.df['cost_center_present']).sum()}, Invalid: {(self.df['cost_center_present'] & ~self.df['cost_center_valid']).sum()}")
         return self
     
     def save_output(self):
         """Save mapped data"""
-        self.output_path = Config.WORKING_DIR / f"GL_WithMappings_{self.task_id}.csv"
-        self.df.to_csv(self.output_path, index=False)
+        existing_anomalies = pd.read_csv(f"{Config.REPORTS_PATH}Input_Anomalies_Detected.csv") if os.path.exists(f"{Config.REPORTS_PATH}Input_Anomalies_Detected.csv") else pd.DataFrame()
+        
+        all_anomalies = pd.concat([
+            existing_anomalies, 
+            pd.DataFrame(self.mapping_anomalies)
+        ], ignore_index=True)
+        
+        all_anomalies.to_csv(f"{Config.REPORTS_PATH}Exceptions_Log.csv", index=False)
+        
+        self.df.to_csv(f"{Config.OUTPUT_PATH}GL_WithMappings.csv", index=False)
+        
+        print(f"   💾 Saved to {Config.OUTPUT_PATH}GL_WithMappings.csv")
+        print(f"   💾 Updated exceptions log with {len(self.mapping_anomalies)} new anomalies")
         
         return self.df
+    
+    def run(self):
+        """Execute all T002 steps"""
+        print("\n" + "="*60)
+        print("🚀 T002: Mapping Entities and Accounts")
+        print("="*60)
+        
+        self.load_master_data()
+        self.map_entities()
+        self.map_accounts()
+        self.map_cost_centers()
+        df = self.save_output()
+        
+        print(f"\n✅ T002 Complete. Mapped {len(df)} transactions.")
+        return df
+
 
 # ============================================================================
 # T003: RESOLVE VENDOR NAMES
@@ -567,56 +645,45 @@ class T002_EntityAccountMapper:
 class T003_VendorResolver:
     """Task 3: Map vendor aliases to canonical vendor names"""
     
-    def __init__(self, df, task_id: str, master_data_dir: Path):
-        self.df = df.copy()
-        self.task_id = task_id
-        self.master_data_dir = master_data_dir
+    def __init__(self, working_df):
+        self.df = working_df.copy()
         self.vendor_master = None
         self.alias_map = None
         self.vendor_anomalies = []
-        self.output_path = None
         
-    def run(self):
-        """Execute all T003 steps"""
-        try:
-            self.load_vendor_data()
-            self.resolve_vendors()
-            self.save_output()
-            
-            # Calculate statistics
-            mapped_count = self.df['vendor_resolution_status'].isin(['MAPPED', 'CANONICAL', 'CLEANED_MATCH', 'PARTIAL_MATCH']).sum()
-            unmapped_count = (self.df['vendor_resolution_status'] == 'UNMAPPED').sum()
-            missing_count = (self.df['vendor_resolution_status'] == 'MISSING').sum()
-            
-            return {
-                "status": "success",
-                "rows_processed": len(self.df),
-                "mapped_vendors": int(mapped_count),
-                "unmapped_vendors": int(unmapped_count),
-                "missing_vendors": int(missing_count),
-                "output_file": str(self.output_path)
-            }
-            
-        except Exception as e:
-            raise Exception(f"T003 failed: {str(e)}")
-    
     def load_vendor_data(self):
         """Load vendor master and alias mapping"""
+        print("\n📂 T003: Loading vendor data...")
         
         try:
-            vendor_path = self.master_data_dir / "Master_Vendors.csv"
-            if vendor_path.exists():
-                self.vendor_master = pd.read_csv(vendor_path)
-                self.vendor_master.columns = [col.lower().strip() for col in self.vendor_master.columns]
-        except:
+            self.vendor_master = pd.read_csv(f"{Config.MASTER_DATA_PATH}Master_Vendors.csv")
+            print(f"   Loaded {len(self.vendor_master)} canonical vendors")
+            
+            self.vendor_master.columns = [col.lower().strip() for col in self.vendor_master.columns]
+            
+            if 'vendor_name_canonical' in self.vendor_master.columns:
+                self.vendor_master.rename(columns={'vendor_name_canonical': 'canonical_vendor'}, inplace=True)
+            elif 'vendor_name' in self.vendor_master.columns:
+                self.vendor_master.rename(columns={'vendor_name': 'canonical_vendor'}, inplace=True)
+            
+        except Exception as e:
+            print(f"   ⚠️ Vendor master not found: {e}")
             self.vendor_master = pd.DataFrame({'canonical_vendor': ['Unknown']})
         
         try:
-            alias_path = self.master_data_dir / "Vendor_Alias_Map.csv"
-            if alias_path.exists():
-                self.alias_map = pd.read_csv(alias_path)
-                self.alias_map.columns = [col.lower().strip() for col in self.alias_map.columns]
-        except:
+            self.alias_map = pd.read_csv(f"{Config.MASTER_DATA_PATH}Vendor_Alias_Map.csv")
+            print(f"   Loaded {len(self.alias_map)} alias mappings")
+            
+            self.alias_map.columns = [col.lower().strip() for col in self.alias_map.columns]
+            
+            if 'vendor_name_raw' in self.alias_map.columns:
+                self.alias_map.rename(columns={'vendor_name_raw': 'alias'}, inplace=True)
+            
+            if 'vendor_name_canonical' in self.alias_map.columns:
+                self.alias_map.rename(columns={'vendor_name_canonical': 'canonical_vendor'}, inplace=True)
+            
+        except Exception as e:
+            print(f"   ⚠️ Alias map not found: {e}")
             self.alias_map = pd.DataFrame({'alias': [], 'canonical_vendor': []})
         
         return self
@@ -625,27 +692,30 @@ class T003_VendorResolver:
         """Create lookup dictionary from aliases to canonical names"""
         alias_dict = {}
         
-        # Build from alias map
         if self.alias_map is not None and len(self.alias_map) > 0:
             if 'alias' in self.alias_map.columns and 'canonical_vendor' in self.alias_map.columns:
                 for _, row in self.alias_map.iterrows():
                     alias_raw = str(row['alias']).strip()
                     alias_lower = alias_raw.lower()
                     alias_dict[alias_lower] = row['canonical_vendor']
+                    
+                    for suffix in [' pty', ' ltd', ' inc', ' corp', ' llc', ' australia', ' usa', ' uk']:
+                        if alias_lower.endswith(suffix):
+                            alias_dict[alias_lower[:-len(suffix)]] = row['canonical_vendor']
         
-        # Add self-mappings from vendor master
         if self.vendor_master is not None and 'canonical_vendor' in self.vendor_master.columns:
             for vendor in self.vendor_master['canonical_vendor'].dropna():
                 vendor_lower = vendor.lower()
                 alias_dict[vendor_lower] = vendor
         
+        print(f"   Built alias dictionary with {len(alias_dict)} entries")
         return alias_dict
     
     def resolve_vendors(self):
         """Apply vendor mapping"""
         alias_dict = self.build_alias_dict()
         
-        if self.vendor_master is not None and 'canonical_vendor' in self.vendor_master.columns:
+        if 'canonical_vendor' in self.vendor_master.columns:
             canonical_list = self.vendor_master['canonical_vendor'].dropna().unique().tolist()
         else:
             canonical_list = []
@@ -657,28 +727,30 @@ class T003_VendorResolver:
             vendor_original = str(vendor_raw).strip()
             vendor_lower = vendor_original.lower()
             
-            # Direct alias match
             if vendor_lower in alias_dict:
                 return alias_dict[vendor_lower], 'MAPPED'
             
-            # Check if already canonical
             if vendor_original in canonical_list:
                 return vendor_original, 'CANONICAL'
             
-            # Try partial matching
+            import re
+            vendor_clean = re.sub(r'[^\w\s]', '', vendor_lower)
+            if vendor_clean in alias_dict:
+                return alias_dict[vendor_clean], 'CLEANED_MATCH'
+            
             for canonical in canonical_list:
                 canonical_lower = canonical.lower()
-                if canonical_lower in vendor_lower or vendor_lower in canonical_lower:
+                if canonical_lower in vendor_lower:
+                    return canonical, 'PARTIAL_MATCH'
+                if len(vendor_lower) > 5 and vendor_lower in canonical_lower:
                     return canonical, 'PARTIAL_MATCH'
             
             return None, 'UNMAPPED'
         
-        # Apply resolution
         results = self.df['vendor_name_raw'].apply(resolve)
         self.df['vendor_canonical'] = [r[0] for r in results]
         self.df['vendor_resolution_status'] = [r[1] for r in results]
         
-        # Log anomalies
         for idx, row in self.df.iterrows():
             if row['vendor_resolution_status'] == 'MISSING':
                 self.vendor_anomalies.append({
@@ -698,14 +770,44 @@ class T003_VendorResolver:
                     'amount': row['amount']
                 })
         
+        mapped_count = self.df['vendor_resolution_status'].isin(['MAPPED', 'CANONICAL', 'CLEANED_MATCH', 'PARTIAL_MATCH']).sum()
+        unmapped_count = (self.df['vendor_resolution_status'] == 'UNMAPPED').sum()
+        missing_count = (self.df['vendor_resolution_status'] == 'MISSING').sum()
+        
+        print(f"\n   📊 Vendor Resolution Results:")
+        print(f"   • Mapped: {mapped_count}")
+        print(f"   • Unmapped: {unmapped_count}")
+        print(f"   • Missing: {missing_count}")
+        
         return self
     
     def save_output(self):
         """Save vendor-resolved data"""
-        self.output_path = Config.WORKING_DIR / f"GL_VendorsResolved_{self.task_id}.csv"
-        self.df.to_csv(self.output_path, index=False)
+        exceptions_path = f"{Config.REPORTS_PATH}Exceptions_Log.csv"
+        if os.path.exists(exceptions_path):
+            existing = pd.read_csv(exceptions_path)
+            all_exceptions = pd.concat([existing, pd.DataFrame(self.vendor_anomalies)], ignore_index=True)
+        else:
+            all_exceptions = pd.DataFrame(self.vendor_anomalies)
         
+        all_exceptions.to_csv(exceptions_path, index=False)
+        self.df.to_csv(f"{Config.OUTPUT_PATH}GL_VendorsResolved.csv", index=False)
+        
+        print(f"   💾 Saved to {Config.OUTPUT_PATH}GL_VendorsResolved.csv")
         return self.df
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T003: Resolving Vendor Names")
+        print("="*60)
+        
+        self.load_vendor_data()
+        self.resolve_vendors()
+        df = self.save_output()
+        
+        print(f"\n✅ T003 Complete. Processed {len(df)} transactions.")
+        return df
+
 
 # ============================================================================
 # T004: APPLY FX CONVERSION
@@ -714,56 +816,36 @@ class T003_VendorResolver:
 class T004_FXConverter:
     """Task 4: Convert all transactions to AUD"""
     
-    def __init__(self, df, task_id: str, reference_dir: Path):
-        self.df = df.copy()
-        self.task_id = task_id
-        self.reference_dir = reference_dir
+    def __init__(self, working_df):
+        self.df = working_df.copy()
         self.fx_rates = None
         self.fx_anomalies = []
-        self.output_path = None
         
-    def run(self):
-        """Execute all T004 steps"""
-        try:
-            self.load_fx_rates()
-            self.convert_to_aud()
-            self.save_output()
-            
-            converted = (self.df['conversion_status'] == 'CONVERTED').sum()
-            failed = (self.df['conversion_status'] == 'FAILED').sum()
-            domestic = (self.df['conversion_status'] == 'DOMESTIC').sum()
-            
-            return {
-                "status": "success",
-                "rows_processed": len(self.df),
-                "domestic_aud": int(domestic),
-                "converted": int(converted),
-                "failed_conversion": int(failed),
-                "output_file": str(self.output_path)
-            }
-            
-        except Exception as e:
-            raise Exception(f"T004 failed: {str(e)}")
-    
     def load_fx_rates(self):
         """Load foreign exchange rates"""
+        print("\n📂 T004: Loading FX rates...")
         
         try:
-            fx_path = self.reference_dir / "FX_Rates.csv"
-            if fx_path.exists():
-                self.fx_rates = pd.read_csv(fx_path)
-                self.fx_rates.columns = [col.lower().strip() for col in self.fx_rates.columns]
-                
-                # Map columns
-                if 'fiscal_period' in self.fx_rates.columns:
-                    self.fx_rates.rename(columns={'fiscal_period': 'period'}, inplace=True)
-                
-                if 'rate_to_aud' in self.fx_rates.columns:
-                    self.fx_rates.rename(columns={'rate_to_aud': 'rate'}, inplace=True)
-                
-                self.fx_rates['period'] = self.fx_rates['period'].astype(str)
-        except:
-            # Create default rates
+            self.fx_rates = pd.read_csv(f"{Config.REFERENCE_PATH}FX_Rates.csv")
+            print(f"   Loaded {len(self.fx_rates)} FX rates")
+            
+            self.fx_rates.columns = [col.lower().strip() for col in self.fx_rates.columns]
+            
+            if 'fiscal_period' in self.fx_rates.columns:
+                self.fx_rates.rename(columns={'fiscal_period': 'period'}, inplace=True)
+            
+            if 'rate_to_aud' in self.fx_rates.columns:
+                self.fx_rates.rename(columns={'rate_to_aud': 'rate'}, inplace=True)
+            
+            self.fx_rates['period'] = self.fx_rates['period'].astype(str)
+            
+            current_rates = self.fx_rates[self.fx_rates['period'] == Config.CURRENT_FISCAL_PERIOD]
+            if not current_rates.empty:
+                for _, row in current_rates.iterrows():
+                    print(f"   • {row['currency']}: 1 {row['currency']} = {row['rate']:.4f} AUD")
+            
+        except Exception as e:
+            print(f"   ⚠️ Error loading FX rates: {e}")
             periods = self.df['fiscal_period'].unique()
             currencies = self.df['currency_code'].unique()
             
@@ -778,8 +860,6 @@ class T004_FXConverter:
                         rate = 1.9550
                     elif currency == 'NZD':
                         rate = 0.9320
-                    elif currency == 'EUR':
-                        rate = 1.62
                     else:
                         rate = 1.0
                     
@@ -795,12 +875,9 @@ class T004_FXConverter:
     
     def convert_to_aud(self):
         """Convert amounts to AUD"""
-        
-        # Create lookup key
         self.df['fx_key'] = self.df['fiscal_period'] + '_' + self.df['currency_code']
         self.fx_rates['fx_key'] = self.fx_rates['period'].astype(str) + '_' + self.fx_rates['currency']
         
-        # Create rate lookup dictionary
         rate_dict = dict(zip(self.fx_rates['fx_key'], self.fx_rates['rate']))
         
         def get_rate(row):
@@ -811,24 +888,22 @@ class T004_FXConverter:
             if key in rate_dict:
                 return rate_dict[key]
             
-            # Try to find any rate for this currency
             currency_rates = {k: v for k, v in rate_dict.items() if k.endswith('_' + row['currency_code'])}
             if currency_rates:
                 sorted_rates = sorted(currency_rates.items(), key=lambda x: x[0], reverse=True)
                 return sorted_rates[0][1]
             
-            # No rate found
             self.fx_anomalies.append({
                 'transaction_id': row['transaction_id'],
                 'anomaly_type': 'MISSING_FX_RATE',
                 'severity': 'CRITICAL',
-                'description': f"No FX rate found for {row['currency_code']}",
+                'description': f"No FX rate found for {row['currency_code']} in period {row['fiscal_period']}",
                 'currency': row['currency_code'],
+                'period': row['fiscal_period'],
                 'amount': row['amount']
             })
             return None
         
-        # Apply conversion
         self.df['fx_rate'] = self.df.apply(get_rate, axis=1)
         self.df['amount_aud'] = np.where(
             self.df['fx_rate'].notna(),
@@ -841,14 +916,41 @@ class T004_FXConverter:
             np.where(self.df['fx_rate'].notna(), 'CONVERTED', 'FAILED')
         )
         
+        converted = (self.df['conversion_status'] == 'CONVERTED').sum()
+        failed = (self.df['conversion_status'] == 'FAILED').sum()
+        domestic = (self.df['conversion_status'] == 'DOMESTIC').sum()
+        
+        print(f"\n   ✓ FX conversion complete. Domestic: {domestic}, Converted: {converted}, Failed: {failed}")
+        
         return self
     
     def save_output(self):
         """Save converted data"""
-        self.output_path = Config.WORKING_DIR / f"GL_Converted_{self.task_id}.csv"
-        self.df.to_csv(self.output_path, index=False)
+        exceptions_path = f"{Config.REPORTS_PATH}Exceptions_Log.csv"
+        if os.path.exists(exceptions_path):
+            existing = pd.read_csv(exceptions_path)
+            all_exceptions = pd.concat([existing, pd.DataFrame(self.fx_anomalies)], ignore_index=True)
+        else:
+            all_exceptions = pd.DataFrame(self.fx_anomalies)
         
+        all_exceptions.to_csv(exceptions_path, index=False)
+        self.df.to_csv(f"{Config.OUTPUT_PATH}GL_Converted.csv", index=False)
+        
+        print(f"\n   💾 Saved to {Config.OUTPUT_PATH}GL_Converted.csv")
         return self.df
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T004: Applying FX Conversion")
+        print("="*60)
+        
+        self.load_fx_rates()
+        self.convert_to_aud()
+        df = self.save_output()
+        
+        print(f"\n✅ T004 Complete. Processed {len(df)} transactions.")
+        return df
+
 
 # ============================================================================
 # T005: DETECT EXCEPTIONS
@@ -857,51 +959,24 @@ class T004_FXConverter:
 class T005_ExceptionDetector:
     """Task 5: Run exception rules and flag violations"""
     
-    def __init__(self, df, task_id: str, reference_dir: Path):
-        self.df = df.copy()
-        self.task_id = task_id
-        self.reference_dir = reference_dir
+    def __init__(self, working_df):
+        self.df = working_df.copy()
         self.rulebook = None
         self.exception_results = []
-        self.output_path = None
-        self.exceptions_path = None
         
-    def run(self):
-        """Execute all T005 steps"""
-        try:
-            self.load_rulebook()
-            self.detect_outliers()
-            self.detect_temporal_anomalies()
-            self.apply_rules()
-            self.save_output()
-            
-            # Severity counts
-            severity_counts = {}
-            for e in self.exception_results:
-                sev = e.get('severity', 'UNKNOWN')
-                severity_counts[sev] = severity_counts.get(sev, 0) + 1
-            
-            return {
-                "status": "success",
-                "rows_processed": len(self.df),
-                "total_exceptions": len(self.exception_results),
-                "severity_breakdown": severity_counts,
-                "output_file": str(self.output_path),
-                "exceptions_file": str(self.exceptions_path)
-            }
-            
-        except Exception as e:
-            raise Exception(f"T005 failed: {str(e)}")
-    
     def load_rulebook(self):
         """Load exception rules"""
+        print("\n📂 T005: Loading exception rulebook...")
         
         try:
-            rules_path = self.reference_dir / "Exception_Rulebook.csv"
-            if rules_path.exists():
-                self.rulebook = pd.read_csv(rules_path)
-        except:
-            # Create default rules
+            self.rulebook = pd.read_csv(f"{Config.REFERENCE_PATH}Exception_Rulebook.csv")
+            print(f"   Loaded {len(self.rulebook)} exception rules")
+            
+            if 'rule_id' not in self.rulebook.columns:
+                self.rulebook['rule_id'] = [f'EX{i+1:03d}' for i in range(len(self.rulebook))]
+                
+        except Exception as e:
+            print(f"   ⚠️ Rulebook not found: {e}")
             self.rulebook = pd.DataFrame([
                 {'rule_id': 'EX001', 'rule_name': 'Missing PO Number', 
                  'severity': 'HIGH', 'description': 'Transaction has no purchase order number'},
@@ -921,64 +996,56 @@ class T005_ExceptionDetector:
                  'severity': 'CRITICAL', 'description': 'Posting date is invalid or missing'},
                 {'rule_id': 'EX009', 'rule_name': 'Missing Tax Code',
                  'severity': 'MEDIUM', 'description': 'Tax code is missing'},
-                {'rule_id': 'EX010', 'rule_name': 'Extreme Outlier',
-                 'severity': 'MEDIUM', 'description': 'Amount is significantly outside normal range'},
             ])
+        
+        required_cols = ['rule_id', 'rule_name', 'severity', 'description']
+        for col in required_cols:
+            if col not in self.rulebook.columns:
+                if col == 'rule_id':
+                    self.rulebook['rule_id'] = [f'EX{i+1:03d}' for i in range(len(self.rulebook))]
+                elif col == 'rule_name':
+                    self.rulebook['rule_name'] = [f'Rule {i+1}' for i in range(len(self.rulebook))]
+                elif col == 'severity':
+                    self.rulebook['severity'] = 'MEDIUM'
+                elif col == 'description':
+                    self.rulebook['description'] = self.rulebook.get('rule_name', 'No description')
         
         return self
     
     def detect_outliers(self):
         """Statistical outlier detection"""
-        if 'account_code_mapped' in self.df.columns and 'amount_aud' in self.df.columns:
-            account_stats = self.df.groupby('account_code_mapped')['amount_aud'].agg(['mean', 'std', 'count']).reset_index()
-            account_stats.columns = ['account_code_mapped', 'mean_amount', 'std_amount', 'txn_count']
-            
-            self.df = self.df.merge(account_stats, on='account_code_mapped', how='left')
-            
-            self.df['is_outlier'] = np.where(
-                (self.df['std_amount'] > 0) & 
-                (self.df['amount_aud'].notna()) &
-                (abs(self.df['amount_aud'] - self.df['mean_amount']) > Config.EXTREME_OUTLIER_MULTIPLIER * self.df['std_amount']),
-                True,
-                False
-            )
-        else:
-            self.df['is_outlier'] = False
+        account_stats = self.df.groupby('account_code_mapped')['amount_aud'].agg(['mean', 'std', 'count']).reset_index()
+        account_stats.columns = ['account_code_mapped', 'mean_amount', 'std_amount', 'txn_count']
         
-        return self
-    
-    def detect_temporal_anomalies(self):
-        """Detect unusual timing patterns"""
-        if 'posting_date' in self.df.columns:
-            self.df['posting_hour'] = self.df['posting_date'].dt.hour if hasattr(self.df['posting_date'], 'dt') else None
-            self.df['posting_weekend'] = self.df['posting_date'].dt.dayofweek.isin([5, 6]) if hasattr(self.df['posting_date'], 'dt') else False
-            
-            self.df['suspicious_hour'] = (
-                self.df['posting_hour'].notna() & 
-                ((self.df['posting_hour'] >= Config.SUSPICIOUS_HOUR_START) | 
-                 (self.df['posting_hour'] <= Config.SUSPICIOUS_HOUR_END))
-            )
+        self.df = self.df.merge(account_stats, on='account_code_mapped', how='left')
         
+        self.df['is_outlier'] = np.where(
+            (self.df['std_amount'] > 0) & 
+            (self.df['amount_aud'].notna()) &
+            (abs(self.df['amount_aud'] - self.df['mean_amount']) > Config.EXTREME_OUTLIER_MULTIPLIER * self.df['std_amount']),
+            True,
+            False
+        )
+        
+        print(f"   ✓ Outlier detection complete. Found {self.df['is_outlier'].sum()} outliers")
         return self
     
     def apply_rules(self):
         """Apply all exception rules"""
         current_date = datetime(Config.CURRENT_YEAR, Config.CURRENT_MONTH, 28)
         
-        # Define rule functions
         rule_functions = {
-            'EX001': lambda row: pd.isna(row.get('po_number')) or row.get('po_number') == '',
-            'EX002': lambda row: pd.isna(row.get('cost_center_mapped')),
-            'EX003': lambda row: pd.isna(row.get('account_code_mapped')),
-            'EX004': lambda row: row.get('amount_aud', 0) > Config.HIGH_VALUE_THRESHOLD if pd.notna(row.get('amount_aud')) else False,
+            'EX001': lambda row: pd.isna(row['po_number']) or row['po_number'] == '',
+            'EX002': lambda row: pd.isna(row['cost_center_mapped']),
+            'EX003': lambda row: pd.isna(row['account_code_mapped']),
+            'EX004': lambda row: row['amount_aud'] > Config.HIGH_VALUE_THRESHOLD if pd.notna(row['amount_aud']) else False,
             'EX005': lambda row: row.get('amount_is_negative', False),
             'EX006': lambda row: row.get('vendor_resolution_status') == 'UNMAPPED',
-            'EX007': lambda row: (pd.notna(row.get('posting_date')) and 
-                                  row.get('posting_date', current_date) > current_date and 
-                                  row.get('fiscal_period') == Config.CURRENT_FISCAL_PERIOD),
-            'EX008': lambda row: pd.isna(row.get('posting_date')),
-            'EX009': lambda row: pd.isna(row.get('tax_code')) or row.get('tax_code') == '',
-            'EX010': lambda row: row.get('is_outlier', False),
+            'EX007': lambda row: (pd.notna(row['posting_date']) and 
+                                  row['posting_date'] > current_date and 
+                                  row['fiscal_period'] == Config.CURRENT_FISCAL_PERIOD),
+            'EX008': lambda row: pd.isna(row['posting_date']),
+            'EX009': lambda row: pd.isna(row['tax_code']) or row['tax_code'] == '',
         }
         
         for _, rule in self.rulebook.iterrows():
@@ -991,7 +1058,6 @@ class T005_ExceptionDetector:
             if rule_func is None:
                 continue
             
-            # Apply rule
             for idx, row in self.df.iterrows():
                 try:
                     if rule_func(row):
@@ -1008,73 +1074,95 @@ class T005_ExceptionDetector:
                 except:
                     continue
         
+        print(f"   ✓ Applied rules, found {len(self.exception_results)} exceptions")
         return self
     
     def save_output(self):
         """Save exception results"""
-        # Add exception flags
         exception_txns = [e['transaction_id'] for e in self.exception_results]
         self.df['has_exception'] = self.df['transaction_id'].isin(exception_txns)
         
-        # Save data with flags
-        self.output_path = Config.WORKING_DIR / f"GL_WithExceptions_{self.task_id}.csv"
-        self.df.to_csv(self.output_path, index=False)
+        self.df.to_csv(f"{Config.OUTPUT_PATH}GL_WithExceptions.csv", index=False)
         
-        # Save exception log
         if self.exception_results:
-            self.exceptions_path = Config.REPORTS_DIR / f"Exceptions_Detailed_{self.task_id}.csv"
             exceptions_df = pd.DataFrame(self.exception_results)
-            exceptions_df.to_csv(self.exceptions_path, index=False)
+            exceptions_df.to_csv(f"{Config.REPORTS_PATH}Exceptions_Detailed.csv", index=False)
+        
+        master_exceptions_path = f"{Config.REPORTS_PATH}Exceptions_Log.csv"
+        
+        new_exceptions = []
+        for e in self.exception_results:
+            new_exceptions.append({
+                'transaction_id': e['transaction_id'],
+                'anomaly_type': e['rule_id'],
+                'severity': e['severity'],
+                'description': e['description'],
+                'amount': e.get('amount', 0)
+            })
+        
+        if os.path.exists(master_exceptions_path):
+            existing = pd.read_csv(master_exceptions_path)
+            all_exceptions = pd.concat([existing, pd.DataFrame(new_exceptions)], ignore_index=True)
+        else:
+            all_exceptions = pd.DataFrame(new_exceptions)
+        
+        all_exceptions.to_csv(master_exceptions_path, index=False)
         
         return self.df, self.exception_results
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T005: Detecting Exceptions")
+        print("="*60)
+        
+        self.load_rulebook()
+        self.detect_outliers()
+        self.apply_rules()
+        df, exceptions = self.save_output()
+        
+        severity_counts = {}
+        for e in exceptions:
+            sev = e.get('severity', 'UNKNOWN')
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        
+        print(f"\n✅ T005 Complete. Exceptions by severity:")
+        for severity, count in severity_counts.items():
+            print(f"   {severity}: {count}")
+        
+        return df, exceptions
+
 
 # ============================================================================
-# T006: REVIEW HIGH SEVERITY EXCEPTIONS
+# T006: REVIEW EXCEPTIONS (Automated)
 # ============================================================================
 
 class T006_ExceptionReviewer:
     """Task 6: Review and categorize exceptions (automated)"""
     
-    def __init__(self, df, exceptions, task_id: str):
+    def __init__(self, df, exceptions):
         self.df = df.copy()
         self.exceptions = exceptions
-        self.task_id = task_id
         self.critical_exceptions = []
         self.high_exceptions = []
-        self.output_path = None
         
-    def run(self):
-        """Execute T006 steps"""
-        try:
-            self.categorize_exceptions()
-            review_data = self.create_review_package()
-            
-            return {
-                "status": "success",
-                "total_exceptions": len(self.exceptions),
-                "critical_count": len(self.critical_exceptions),
-                "high_count": len(self.high_exceptions),
-                "auto_approved": True,
-                "review_file": str(self.output_path)
-            }
-            
-        except Exception as e:
-            raise Exception(f"T006 failed: {str(e)}")
-    
     def categorize_exceptions(self):
         """Split exceptions by severity"""
         for e in self.exceptions:
-            if e.get('severity') == 'CRITICAL':
+            if e['severity'] == 'CRITICAL':
                 self.critical_exceptions.append(e)
-            elif e.get('severity') == 'HIGH':
+            elif e['severity'] == 'HIGH':
                 self.high_exceptions.append(e)
+        
+        print(f"\n📊 T006: Exception Summary")
+        print(f"   Critical: {len(self.critical_exceptions)}")
+        print(f"   High: {len(self.high_exceptions)}")
+        print(f"   Medium/Low: {len(self.exceptions) - len(self.critical_exceptions) - len(self.high_exceptions)}")
         
         return self
     
     def create_review_package(self):
         """Create automated review summary"""
         
-        # Group critical exceptions by type
         critical_summary = {}
         for e in self.critical_exceptions:
             e_type = e.get('anomaly_type', e.get('rule_id', 'UNKNOWN'))
@@ -1083,21 +1171,52 @@ class T006_ExceptionReviewer:
             
             critical_summary[e_type]['count'] += 1
             critical_summary[e_type]['total_amount'] += e.get('amount', 0)
+            
+            if len(critical_summary[e_type]['examples']) < 3:
+                critical_summary[e_type]['examples'].append({
+                    'transaction_id': e['transaction_id'],
+                    'amount': e.get('amount', 0),
+                    'description': e.get('description', '')
+                })
         
         review_data = {
             'timestamp': datetime.now().isoformat(),
             'total_critical': len(self.critical_exceptions),
             'total_high': len(self.high_exceptions),
             'critical_summary': critical_summary,
-            'auto_approved': True
+            'auto_approved': True,
+            'note': 'Automated processing - no human review required'
         }
         
-        # Save to file
-        self.output_path = Config.REPORTS_DIR / f"Exception_Review_Summary_{self.task_id}.json"
-        with open(self.output_path, 'w') as f:
+        import json
+        with open(f"{Config.REPORTS_PATH}Exception_Review_Summary.json", 'w') as f:
             json.dump(review_data, f, indent=2, default=str)
         
+        with open(f"{Config.REPORTS_PATH}Exception_Review_Summary.txt", 'w') as f:
+            f.write("EXCEPTION REVIEW SUMMARY (Automated)\n")
+            f.write("="*50 + "\n\n")
+            f.write(f"Review Date: {datetime.now()}\n")
+            f.write(f"Status: AUTO-APPROVED\n\n")
+            f.write(f"CRITICAL EXCEPTIONS: {len(self.critical_exceptions)}\n")
+            for e_type, data in critical_summary.items():
+                f.write(f"  • {e_type}: {data['count']} occurrences, ${data['total_amount']:,.2f}\n")
+            f.write(f"\nHIGH EXCEPTIONS: {len(self.high_exceptions)}\n")
+        
         return review_data
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T006: Reviewing High Severity Exceptions")
+        print("="*60)
+        print("   ⚡ Automated mode - no human review required")
+        
+        self.categorize_exceptions()
+        review_data = self.create_review_package()
+        
+        print(f"\n✅ T006 Complete. Proceeding with pipeline.")
+        
+        return self.df, review_data
+
 
 # ============================================================================
 # T007: COMPUTE BUDGET VARIANCE
@@ -1106,80 +1225,62 @@ class T006_ExceptionReviewer:
 class T007_BudgetVariance:
     """Task 7: Calculate actual vs budget variance"""
     
-    def __init__(self, df, task_id: str, budget_dir: Path):
+    def __init__(self, df):
         self.df = df.copy()
-        self.task_id = task_id
-        self.budget_dir = budget_dir
         self.budget_data = None
         self.variance_results = {}
-        self.output_paths = {}
         
-    def run(self):
-        """Execute T007 steps"""
-        try:
-            self.load_budget()
-            self.calculate_variance()
-            self.save_output()
-            
-            return {
-                "status": "success",
-                "total_actual": float(self.variance_results['total_actual']),
-                "total_budget": float(self.variance_results['total_budget']),
-                "total_variance": float(self.variance_results['total_variance']),
-                "variance_percentage": float(self.variance_results['total_variance_pct']),
-                "suspense_amount": float(self.variance_results['suspense_amount']),
-                "future_dated_amount": float(self.variance_results['future_dated_amount']),
-                "transaction_count": int(self.variance_results['transaction_count']),
-                "exception_count": int(self.variance_results['exception_count']),
-                "output_files": self.output_paths
-            }
-            
-        except Exception as e:
-            raise Exception(f"T007 failed: {str(e)}")
-    
     def load_budget(self):
         """Load budget data"""
+        print("\n📂 T007: Loading budget data...")
         
         try:
-            budget_path = self.budget_dir / "Budget_2026.csv"
-            if budget_path.exists():
-                self.budget_data = pd.read_csv(budget_path)
-                self.budget_data.columns = [col.lower().strip() for col in self.budget_data.columns]
-                
-                # Ensure required columns
-                if 'account_code' not in self.budget_data.columns:
-                    for col in ['account', 'gl_account', 'coa']:
-                        if col in self.budget_data.columns:
-                            self.budget_data.rename(columns={col: 'account_code'}, inplace=True)
-                            break
-                
-                if 'budget_amount' not in self.budget_data.columns:
-                    for col in ['amount', 'budget', 'planned_amount']:
-                        if col in self.budget_data.columns:
-                            self.budget_data.rename(columns={col: 'budget_amount'}, inplace=True)
-                            break
-                
-                # Clean budget amounts
-                if 'budget_amount' in self.budget_data.columns:
-                    self.budget_data['budget_amount'] = pd.to_numeric(
-                        self.budget_data['budget_amount'].astype(str).str.replace('$', '').str.replace(',', ''),
-                        errors='coerce'
-                    )
-                    self.budget_data['budget_amount'] = self.budget_data['budget_amount'].fillna(0.01).clip(lower=0.01)
-                
-                # Ensure period column
-                if 'period' not in self.budget_data.columns:
-                    for col in ['fiscal_period', 'month', 'reporting_period']:
-                        if col in self.budget_data.columns:
-                            self.budget_data.rename(columns={col: 'period'}, inplace=True)
-                            break
-                    else:
-                        self.budget_data['period'] = Config.CURRENT_FISCAL_PERIOD
-                
-                self.budget_data['period'] = self.budget_data['period'].astype(str)
-                self.budget_data['account_code'] = self.budget_data['account_code'].astype(str)
-        except:
-            # Create sample budget
+            self.budget_data = pd.read_csv(f"{Config.BUDGET_PATH}Budget_2026.csv")
+            print(f"   Loaded budget data with {len(self.budget_data)} rows")
+            
+            self.budget_data.columns = [col.lower().strip() for col in self.budget_data.columns]
+            
+            period_col = None
+            for col in ['fiscal_period', 'period', 'month', 'reporting_period']:
+                if col in self.budget_data.columns:
+                    period_col = col
+                    break
+            
+            if period_col:
+                self.budget_data.rename(columns={period_col: 'period'}, inplace=True)
+            else:
+                self.budget_data['period'] = Config.CURRENT_FISCAL_PERIOD
+            
+            account_col = None
+            for col in ['account_code', 'account', 'gl_account', 'coa']:
+                if col in self.budget_data.columns:
+                    account_col = col
+                    break
+            
+            if account_col:
+                self.budget_data.rename(columns={account_col: 'account_code'}, inplace=True)
+            
+            budget_col = None
+            for col in ['budget_amount_aud', 'budget_amount', 'budget', 'amount', 'planned_amount']:
+                if col in self.budget_data.columns:
+                    budget_col = col
+                    break
+            
+            if budget_col:
+                self.budget_data.rename(columns={budget_col: 'budget_amount'}, inplace=True)
+                self.budget_data['budget_amount'] = pd.to_numeric(
+                    self.budget_data['budget_amount'].astype(str).str.replace('$', '').str.replace(',', ''),
+                    errors='coerce'
+                )
+            else:
+                self.budget_data['budget_amount'] = 100000
+            
+            self.budget_data['period'] = self.budget_data['period'].astype(str)
+            self.budget_data['account_code'] = self.budget_data['account_code'].astype(str)
+            self.budget_data['budget_amount'] = self.budget_data['budget_amount'].replace(0, 0.01)
+            
+        except Exception as e:
+            print(f"   ⚠️ Budget data not found: {e}")
             accounts = self.df['account_code_mapped'].dropna().unique() if 'account_code_mapped' in self.df.columns else ['5000']
             
             budget_rows = []
@@ -1187,7 +1288,7 @@ class T007_BudgetVariance:
                 budget_rows.append({
                     'account_code': str(account),
                     'period': Config.CURRENT_FISCAL_PERIOD,
-                    'budget_amount': float(np.random.randint(50000, 200000))
+                    'budget_amount': 100000
                 })
             
             self.budget_data = pd.DataFrame(budget_rows)
@@ -1196,76 +1297,67 @@ class T007_BudgetVariance:
     
     def calculate_variance(self):
         """Calculate variance"""
-        
-        # Filter to current period
         current_period_df = self.df[
             (self.df['fiscal_period'] == Config.CURRENT_FISCAL_PERIOD) &
             (self.df['amount_aud'].notna())
         ].copy()
         
-        # Variance by Account
-        if 'account_code_mapped' in current_period_df.columns:
-            account_actuals = current_period_df.groupby('account_code_mapped').agg({
-                'amount_aud': 'sum',
-                'transaction_id': 'count'
-            }).rename(columns={
-                'amount_aud': 'actual_amount',
-                'transaction_id': 'transaction_count'
-            }).reset_index()
+        account_actuals = current_period_df.groupby('account_code_mapped').agg({
+            'amount_aud': 'sum',
+            'transaction_id': 'count'
+        }).rename(columns={
+            'amount_aud': 'actual_amount',
+            'transaction_id': 'transaction_count'
+        }).reset_index()
+        
+        account_actuals['account_code_mapped'] = account_actuals['account_code_mapped'].astype(str)
+        
+        feb_budget = self.budget_data[self.budget_data['period'] == Config.CURRENT_FISCAL_PERIOD].copy()
+        
+        if feb_budget.empty:
+            feb_budget = self.budget_data.copy()
+        
+        feb_budget['account_code'] = feb_budget['account_code'].astype(str)
+        
+        if not account_actuals.empty and not feb_budget.empty:
+            account_variance = pd.merge(
+                account_actuals,
+                feb_budget[['account_code', 'budget_amount']],
+                left_on='account_code_mapped',
+                right_on='account_code',
+                how='outer'
+            )
             
-            account_actuals['account_code_mapped'] = account_actuals['account_code_mapped'].astype(str)
+            account_variance['budget_amount'] = account_variance['budget_amount'].fillna(0.01)
+            account_variance['actual_amount'] = account_variance['actual_amount'].fillna(0)
+            account_variance['variance'] = account_variance['actual_amount'] - account_variance['budget_amount']
             
-            # Get budget for current period
-            feb_budget = self.budget_data[self.budget_data['period'] == Config.CURRENT_FISCAL_PERIOD].copy()
-            if feb_budget.empty:
-                feb_budget = self.budget_data.copy()
+            def safe_variance_pct(row):
+                if row['budget_amount'] > 0:
+                    return (row['variance'] / row['budget_amount']) * 100
+                elif row['actual_amount'] > 0:
+                    return 999999
+                else:
+                    return 0
             
-            feb_budget['account_code'] = feb_budget['account_code'].astype(str)
+            account_variance['variance_pct'] = account_variance.apply(safe_variance_pct, axis=1)
             
-            # Merge with budget
-            if not account_actuals.empty and not feb_budget.empty:
-                account_variance = pd.merge(
-                    account_actuals,
-                    feb_budget[['account_code', 'budget_amount']],
-                    left_on='account_code_mapped',
-                    right_on='account_code',
-                    how='outer'
-                )
-                
-                account_variance['budget_amount'] = account_variance['budget_amount'].fillna(0.01)
-                account_variance['actual_amount'] = account_variance['actual_amount'].fillna(0)
-                account_variance['variance'] = account_variance['actual_amount'] - account_variance['budget_amount']
-                
-                def safe_variance_pct(row):
-                    if row['budget_amount'] > 0:
-                        return (row['variance'] / row['budget_amount']) * 100
-                    elif row['actual_amount'] > 0:
-                        return 999999
-                    else:
-                        return 0
-                
-                account_variance['variance_pct'] = account_variance.apply(safe_variance_pct, axis=1)
-                account_variance = account_variance.drop(columns=['account_code'], errors='ignore')
-                account_variance = account_variance.rename(columns={'account_code_mapped': 'account_code'})
-            else:
-                account_variance = pd.DataFrame()
+            account_variance = account_variance.drop(columns=['account_code'], errors='ignore')
+            account_variance = account_variance.rename(columns={'account_code_mapped': 'account_code'})
         else:
             account_variance = pd.DataFrame()
         
-        # Suspense amounts
         suspense_amount = current_period_df[
-            current_period_df['account_code_mapped'].isna() if 'account_code_mapped' in current_period_df.columns else False
+            current_period_df['account_code_mapped'].isna()
         ]['amount_aud'].sum()
         
-        # Future dated amounts
         current_date = datetime(Config.CURRENT_YEAR, Config.CURRENT_MONTH, 28)
         future_amount = current_period_df[
-            current_period_df['posting_date'] > current_date if 'posting_date' in current_period_df.columns else False
+            current_period_df['posting_date'] > current_date
         ]['amount_aud'].sum()
         
-        # Totals
-        total_actual = float(current_period_df['amount_aud'].sum())
-        total_budget = float(feb_budget['budget_amount'].sum()) if not feb_budget.empty else 0.01
+        total_actual = current_period_df['amount_aud'].sum()
+        total_budget = feb_budget['budget_amount'].sum() if not feb_budget.empty else 0.01
         
         total_variance = total_actual - total_budget
         if total_budget > 0:
@@ -1277,192 +1369,189 @@ class T007_BudgetVariance:
         
         self.variance_results = {
             'by_account': account_variance.to_dict('records') if not account_variance.empty else [],
-            'suspense_amount': float(suspense_amount),
-            'future_dated_amount': float(future_amount),
+            'suspense_amount': suspense_amount,
+            'future_dated_amount': future_amount,
             'total_actual': total_actual,
             'total_budget': total_budget,
             'total_variance': total_variance,
             'total_variance_pct': total_variance_pct,
-            'transaction_count': int(len(current_period_df)),
-            'exception_count': int(current_period_df['has_exception'].sum() if 'has_exception' in current_period_df.columns else 0)
+            'transaction_count': len(current_period_df),
+            'exception_count': current_period_df['has_exception'].sum() if 'has_exception' in current_period_df.columns else 0
         }
+        
+        print(f"\n   Variance Summary:")
+        print(f"   Total Actual: ${total_actual:,.2f}")
+        print(f"   Total Budget: ${total_budget:,.2f}")
+        print(f"   Variance: ${total_variance:,.2f} ({total_variance_pct:.1f}%)")
+        print(f"   Suspense: ${suspense_amount:,.2f}")
+        print(f"   Future dated: ${future_amount:,.2f}")
         
         return self
     
     def save_output(self):
         """Save variance results"""
-        
-        # Save detailed variance
         if self.variance_results['by_account']:
-            account_path = Config.REPORTS_DIR / f"Budget_Variance_By_Account_{self.task_id}.csv"
-            pd.DataFrame(self.variance_results['by_account']).to_csv(account_path, index=False)
-            self.output_paths['by_account'] = str(account_path)
+            pd.DataFrame(self.variance_results['by_account']).to_csv(
+                f"{Config.REPORTS_PATH}Budget_Variance_By_Account.csv", index=False
+            )
         
-        # Save summary
-        summary_path = Config.REPORTS_DIR / f"Budget_Variance_Summary_{self.task_id}.csv"
         summary_df = pd.DataFrame([{
-            'metric': 'Total Actual', 'value': self.variance_results['total_actual']
+            'metric': 'Total Actual',
+            'value': self.variance_results['total_actual']
         }, {
-            'metric': 'Total Budget', 'value': self.variance_results['total_budget']
+            'metric': 'Total Budget',
+            'value': self.variance_results['total_budget']
         }, {
-            'metric': 'Variance', 'value': self.variance_results['total_variance']
+            'metric': 'Variance',
+            'value': self.variance_results['total_variance']
         }, {
-            'metric': 'Variance %', 'value': self.variance_results['total_variance_pct']
+            'metric': 'Variance %',
+            'value': self.variance_results['total_variance_pct']
         }, {
-            'metric': 'Suspense Amount', 'value': self.variance_results['suspense_amount']
+            'metric': 'Suspense Amount',
+            'value': self.variance_results['suspense_amount']
         }, {
-            'metric': 'Future Dated Amount', 'value': self.variance_results['future_dated_amount']
+            'metric': 'Future Dated Amount',
+            'value': self.variance_results['future_dated_amount']
         }, {
-            'metric': 'Transaction Count', 'value': self.variance_results['transaction_count']
+            'metric': 'Transaction Count',
+            'value': self.variance_results['transaction_count']
         }, {
-            'metric': 'Exception Count', 'value': self.variance_results['exception_count']
+            'metric': 'Exception Count',
+            'value': self.variance_results['exception_count']
         }])
-        summary_df.to_csv(summary_path, index=False)
-        self.output_paths['summary'] = str(summary_path)
+        
+        summary_df.to_csv(f"{Config.REPORTS_PATH}Budget_Variance_Summary.csv", index=False)
         
         return self.variance_results
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T007: Computing Budget Variance")
+        print("="*60)
+        
+        self.load_budget()
+        self.calculate_variance()
+        results = self.save_output()
+        
+        print(f"\n✅ T007 Complete.")
+        return results
+
 
 # ============================================================================
-# T008: CLOSE PACK REPORT
+# T008: CLOSE PACK REPORT (Simplified)
 # ============================================================================
 
 class T008_ClosePackReport:
-    """Task 8: Generate close pack reports"""
+    """Task 8: Generate close pack report"""
     
-    def __init__(self, df, variance_results, exceptions, task_id: str):
-        self.df = df.copy()
+    def __init__(self, df, variance_results, exceptions):
+        self.df = df
         self.variance = variance_results
         self.exceptions = exceptions
-        self.task_id = task_id
         self.report_data = {}
-        self.output_paths = {}
         
-    def run(self):
-        """Execute T008 steps"""
-        try:
-            self.prepare_summary()
-            self.prepare_currency_summary()
-            self.prepare_exception_summary()
-            self.save_reports()
-            
-            return {
-                "status": "success",
-                "report_data": self.report_data,
-                "output_files": self.output_paths
-            }
-            
-        except Exception as e:
-            raise Exception(f"T008 failed: {str(e)}")
-    
-    def prepare_summary(self):
-        """Prepare high-level summary"""
-        self.report_data['summary'] = {
-            'total_spend': float(self.variance['total_actual']),
-            'budget_variance': float(self.variance['total_variance']),
-            'variance_percentage': float(self.variance['total_variance_pct']),
-            'transaction_count': int(self.variance['transaction_count']),
-            'exception_count': int(self.variance['exception_count']),
-            'suspense_amount': float(self.variance['suspense_amount']),
-            'future_dated_amount': float(self.variance['future_dated_amount'])
+    def generate_report(self):
+        """Generate report data"""
+        
+        # Currency summary
+        currency_summary = self.df.groupby('currency_code').agg({
+            'amount_aud': 'sum',
+            'transaction_id': 'count'
+        }).reset_index()
+        currency_summary.columns = ['currency_code', 'amount_aud', 'transaction_count']
+        
+        # Entity summary
+        entity_summary = self.df.groupby('entity_code').agg({
+            'amount_aud': 'sum',
+            'transaction_id': 'count'
+        }).reset_index()
+        entity_summary.columns = ['entity_code', 'amount_aud', 'transaction_count']
+        
+        # Exception summary by type
+        exception_types = {}
+        for e in self.exceptions:
+            e_type = e.get('anomaly_type', e.get('rule_id', 'UNKNOWN'))
+            if e_type not in exception_types:
+                exception_types[e_type] = 0
+            exception_types[e_type] += 1
+        
+        self.report_data = {
+            'generated_at': datetime.now().isoformat(),
+            'fiscal_period': Config.CURRENT_FISCAL_PERIOD,
+            'total_transactions': len(self.df),
+            'total_spend': self.variance['total_actual'],
+            'budget_variance': self.variance['total_variance'],
+            'variance_percentage': self.variance['total_variance_pct'],
+            'total_exceptions': len(self.exceptions),
+            'critical_exceptions': len([e for e in self.exceptions if e.get('severity') == 'CRITICAL']),
+            'high_exceptions': len([e for e in self.exceptions if e.get('severity') == 'HIGH']),
+            'suspense_amount': self.variance['suspense_amount'],
+            'future_dated_amount': self.variance['future_dated_amount'],
+            'currency_summary': currency_summary.to_dict('records'),
+            'entity_summary': entity_summary.to_dict('records'),
+            'exception_types': exception_types
         }
-        return self
-    
-    def prepare_currency_summary(self):
-        """Prepare currency breakdown"""
-        if 'currency_code' in self.df.columns and 'amount_aud' in self.df.columns:
-            currency_summary = self.df.groupby('currency_code').agg({
-                'amount_aud': 'sum',
-                'transaction_id': 'count'
-            }).reset_index()
-            
-            currency_summary.columns = ['currency_code', 'amount_aud', 'transaction_count']
-            currency_summary['amount_aud'] = currency_summary['amount_aud'].fillna(0)
-            
-            self.report_data['currency_summary'] = currency_summary.to_dict('records')
-        else:
-            self.report_data['currency_summary'] = []
         
         return self
     
-    def prepare_exception_summary(self):
-        """Prepare exception summary"""
-        if self.exceptions:
-            exception_df = pd.DataFrame(self.exceptions)
-            
-            severity_counts = exception_df['severity'].value_counts().to_dict()
-            type_counts = exception_df['anomaly_type'].value_counts().head(5).to_dict() if 'anomaly_type' in exception_df.columns else {}
-            
-            self.report_data['exception_summary'] = {
-                'total': len(self.exceptions),
-                'by_severity': severity_counts,
-                'top_types': type_counts
-            }
-        else:
-            self.report_data['exception_summary'] = {'total': 0}
-        
-        return self
-    
-    def save_reports(self):
-        """Save all reports"""
-        
-        # Save summary JSON
-        summary_path = Config.REPORTS_DIR / f"Close_Pack_Summary_{self.task_id}.json"
-        with open(summary_path, 'w') as f:
+    def save_report(self):
+        """Save report"""
+        # Save as JSON
+        with open(f"{Config.REPORTS_PATH}Close_Pack_Report_{Config.CURRENT_FISCAL_PERIOD.replace('-', '')}.json", 'w') as f:
             json.dump(self.report_data, f, indent=2, default=str)
-        self.output_paths['summary'] = str(summary_path)
         
-        # Save currency summary CSV
-        if self.report_data.get('currency_summary'):
-            currency_path = Config.REPORTS_DIR / f"Currency_Summary_{self.task_id}.csv"
-            pd.DataFrame(self.report_data['currency_summary']).to_csv(currency_path, index=False)
-            self.output_paths['currency'] = str(currency_path)
+        # Create simple Excel
+        try:
+            with pd.ExcelWriter(f"{Config.REPORTS_PATH}Close_Pack_Report_{Config.CURRENT_FISCAL_PERIOD.replace('-', '')}.xlsx", engine='openpyxl') as writer:
+                pd.DataFrame([{
+                    'Metric': 'Total Spend',
+                    'Value': self.variance['total_actual']
+                }]).to_excel(writer, sheet_name='Summary', index=False)
+                
+                if 'by_account' in self.variance and self.variance['by_account']:
+                    pd.DataFrame(self.variance['by_account']).to_excel(writer, sheet_name='Variance by Account', index=False)
+                
+                if self.exceptions:
+                    pd.DataFrame(self.exceptions[:1000]).to_excel(writer, sheet_name='Exceptions', index=False)
+        except:
+            pass
         
         return self.report_data
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T008: Generating Close Pack Report")
+        print("="*60)
+        
+        self.generate_report()
+        report_data = self.save_report()
+        
+        print(f"\n✅ T008 Complete.")
+        return report_data
+
 
 # ============================================================================
-# T009: GENERATE EXECUTIVE NARRATIVE
+# T009: EXECUTIVE NARRATIVE
 # ============================================================================
 
 class T009_ExecutiveNarrative:
     """Task 9: Create natural language summary"""
     
-    def __init__(self, variance_results, report_data, exceptions, task_id: str):
+    def __init__(self, variance_results, report_data, exceptions):
         self.variance = variance_results
         self.report = report_data
         self.exceptions = exceptions
-        self.task_id = task_id
         self.narrative = ""
-        self.output_path = None
         
-    def run(self):
-        """Execute T009 steps"""
-        try:
-            self.generate_narrative()
-            self.save_narrative()
-            
-            return {
-                "status": "success",
-                "narrative": self.narrative,
-                "file_path": str(self.output_path)
-            }
-            
-        except Exception as e:
-            raise Exception(f"T009 failed: {str(e)}")
-    
     def generate_narrative(self):
         """Generate narrative using templates"""
-        
         lines = []
         
-        # Header
         lines.append("="*80)
         lines.append(f"EXECUTIVE NARRATIVE - {Config.CURRENT_FISCAL_PERIOD}")
         lines.append("="*80)
         lines.append("")
-        
-        # Financial Summary
-        lines.append("FINANCIAL SUMMARY")
-        lines.append("-"*40)
         
         variance_pct = self.variance['total_variance_pct']
         if abs(variance_pct) < 2:
@@ -1483,69 +1572,60 @@ class T009_ExecutiveNarrative:
                     f"The variance is ${abs(self.variance['total_variance']):,.2f} ({variance_pct:.1f}%).")
         lines.append("")
         
-        # Key Drivers
-        lines.append("KEY VARIANCE DRIVERS")
-        lines.append("-"*40)
-        
-        # Find largest variances
-        account_variances = self.variance.get('by_account', [])
-        top_pos = sorted([a for a in account_variances if a.get('variance', 0) > 0], 
-                         key=lambda x: x['variance'], reverse=True)[:3]
-        top_neg = sorted([a for a in account_variances if a.get('variance', 0) < 0], 
-                         key=lambda x: x['variance'])[:3]
-        
-        if top_pos:
-            lines.append("Positive variances (over budget):")
-            for a in top_pos:
-                lines.append(f"  • {a.get('account_code', 'Unknown')}: +${a['variance']:,.2f} ({a['variance_pct']:.1f}%)")
-        
-        if top_neg:
-            lines.append("Negative variances (under budget):")
-            for a in top_neg:
-                lines.append(f"  • {a.get('account_code', 'Unknown')}: ${a['variance']:,.2f} ({a['variance_pct']:.1f}%)")
-        lines.append("")
-        
-        # Exception Summary
         lines.append("EXCEPTION SUMMARY")
         lines.append("-"*40)
         
         critical_count = len([e for e in self.exceptions if e.get('severity') == 'CRITICAL'])
         high_count = len([e for e in self.exceptions if e.get('severity') == 'HIGH'])
-        medium_count = len([e for e in self.exceptions if e.get('severity') == 'MEDIUM'])
         
         lines.append(f"Total exceptions: {len(self.exceptions)}")
         lines.append(f"  • Critical: {critical_count}")
         lines.append(f"  • High: {high_count}")
-        lines.append(f"  • Medium: {medium_count}")
-        
-        # Data Quality Impact
         lines.append("")
+        
         lines.append("DATA QUALITY IMPACT")
         lines.append("-"*40)
         
         suspense_amount = self.variance.get('suspense_amount', 0)
         future_amount = self.variance.get('future_dated_amount', 0)
-        total_impact = suspense_amount + future_amount
-        impact_pct = (total_impact / self.variance['total_actual'] * 100) if self.variance['total_actual'] > 0 else 0
         
-        lines.append(f"Transactions with data quality issues: ${total_impact:,.2f} ({impact_pct:.1f}% of total)")
-        if suspense_amount > 0:
-            lines.append(f"  • Invalid accounts (in suspense): ${suspense_amount:,.2f}")
-        if future_amount > 0:
-            lines.append(f"  • Future-dated transactions: ${future_amount:,.2f}")
+        lines.append(f"Suspense (invalid accounts): ${suspense_amount:,.2f}")
+        lines.append(f"Future-dated transactions: ${future_amount:,.2f}")
+        lines.append("")
         
-        # Join all lines
+        lines.append("RECOMMENDATIONS")
+        lines.append("-"*40)
+        
+        if suspense_amount > 10000:
+            lines.append("• Review and remap transactions with invalid account codes")
+        if future_amount > 10000:
+            lines.append("• Reclassify future-dated transactions to correct period")
+        if critical_count > 0:
+            lines.append("• Investigate critical exceptions before next close")
+        
         self.narrative = "\n".join(lines)
         
         return self
     
     def save_narrative(self):
         """Save narrative to file"""
-        self.output_path = Config.REPORTS_DIR / f"Executive_Narrative_{self.task_id}.txt"
-        with open(self.output_path, 'w') as f:
+        filename = f"{Config.REPORTS_PATH}Executive_Narrative_{Config.CURRENT_FISCAL_PERIOD.replace('-', '')}.txt"
+        with open(filename, 'w') as f:
             f.write(self.narrative)
         
         return self.narrative
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T009: Generating Executive Narrative")
+        print("="*60)
+        
+        self.generate_narrative()
+        narrative = self.save_narrative()
+        
+        print(f"\n✅ T009 Complete.")
+        return narrative
+
 
 # ============================================================================
 # T010: FORECAST NEXT PERIOD
@@ -1554,76 +1634,52 @@ class T009_ExecutiveNarrative:
 class T010_Forecast:
     """Task 10: Generate forecast for next period"""
     
-    def __init__(self, df, variance_results, task_id: str, reference_dir: Path):
+    def __init__(self, df, variance_results):
         self.df = df
         self.variance = variance_results
-        self.task_id = task_id
-        self.reference_dir = reference_dir
         self.historical_data = None
         self.forecast = {}
-        self.output_path = None
         
-    def run(self):
-        """Execute T010 steps"""
-        try:
-            self.load_historical()
-            self.calculate_trends()
-            self.save_forecast()
-            
-            return {
-                "status": "success",
-                "next_period": self.forecast['next_period'],
-                "forecast_amount": float(self.forecast['forecast_amount']),
-                "lower_bound": float(self.forecast['lower_bound']),
-                "upper_bound": float(self.forecast['upper_bound']),
-                "confidence_level": float(self.forecast['confidence_level']),
-                "method": self.forecast['method'],
-                "file_path": str(self.output_path)
-            }
-            
-        except Exception as e:
-            raise Exception(f"T010 failed: {str(e)}")
-    
     def load_historical(self):
         """Load historical KPI data"""
+        print("\n📂 T010: Loading historical data...")
         
         try:
-            historical_path = self.reference_dir / "KPI_Monthly_History.csv"
-            if historical_path.exists():
-                self.historical_data = pd.read_csv(historical_path)
-                self.historical_data.columns = [col.lower().strip() for col in self.historical_data.columns]
-                
-                # Find period column
-                period_col = None
-                for col in ['period', 'month', 'fiscal_period']:
-                    if col in self.historical_data.columns:
-                        period_col = col
-                        break
-                
-                if period_col and period_col != 'period':
+            self.historical_data = pd.read_csv(f"{Config.REFERENCE_PATH}KPI_Monthly_History.csv")
+            print(f"   Loaded {len(self.historical_data)} rows of historical data")
+            
+            self.historical_data.columns = [col.lower().strip() for col in self.historical_data.columns]
+            
+            period_col = None
+            for col in ['period', 'month', 'fiscal_period', 'reporting_period']:
+                if col in self.historical_data.columns:
+                    period_col = col
+                    break
+            
+            if period_col:
+                if period_col != 'period':
                     self.historical_data.rename(columns={period_col: 'period'}, inplace=True)
-                
-                # Find spend column
-                spend_col = None
-                for col in ['total_spend', 'spend', 'amount', 'actual', 'value']:
-                    if col in self.historical_data.columns:
-                        spend_col = col
-                        break
-                
-                if spend_col and spend_col != 'total_spend':
+            else:
+                self.historical_data['period'] = [f"2025-{i:02d}" for i in range(1, len(self.historical_data) + 1)]
+            
+            spend_col = None
+            for col in ['total_spend', 'spend', 'amount', 'actual', 'value']:
+                if col in self.historical_data.columns:
+                    spend_col = col
+                    break
+            
+            if spend_col:
+                if spend_col != 'total_spend':
                     self.historical_data.rename(columns={spend_col: 'total_spend'}, inplace=True)
-                
-                if 'period' not in self.historical_data.columns:
-                    self.historical_data['period'] = [f"{Config.CURRENT_YEAR-1}-{i:02d}" for i in range(1, 13)]
-                
-                if 'total_spend' not in self.historical_data.columns:
-                    base_spend = self.variance.get('total_actual', 1000000)
-                    self.historical_data['total_spend'] = [
-                        base_spend * (0.8 + 0.4 * np.random.random()) 
-                        for _ in range(len(self.historical_data))
-                    ]
-        except:
-            # Create synthetic history
+            else:
+                base_spend = self.variance.get('total_actual', 1000000)
+                self.historical_data['total_spend'] = [
+                    base_spend * (0.8 + 0.4 * np.random.random()) 
+                    for _ in range(len(self.historical_data))
+                ]
+            
+        except Exception as e:
+            print(f"   ⚠️ Historical data not found: {e}")
             months = []
             base_spend = self.variance.get('total_actual', 1000000)
             
@@ -1637,58 +1693,215 @@ class T010_Forecast:
                 month = f"{year}-{month_num:02d}"
                 months.append({
                     'period': month,
-                    'total_spend': base_spend * (0.8 + 0.4 * np.random.random())
+                    'total_spend': base_spend * (0.8 + 0.4 * np.random.random()),
                 })
-            
             self.historical_data = pd.DataFrame(months)
         
-        # Ensure period is string
         self.historical_data['period'] = self.historical_data['period'].astype(str)
-        
         return self
     
     def calculate_trends(self):
-        """Calculate trends and generate forecast"""
+        """Calculate trends from historical data"""
         
-        # Sort by period
         try:
             self.historical_data = self.historical_data.sort_values('period')
         except:
             pass
         
-        # Calculate next period
+        if len(self.historical_data) >= 3:
+            self.historical_data['spend_ma_3'] = self.historical_data['total_spend'].rolling(3, min_periods=1).mean()
+        else:
+            self.historical_data['spend_ma_3'] = self.historical_data['total_spend']
+        
+        recent_data = self.historical_data.tail(min(3, len(self.historical_data)))
+        recent_avg = recent_data['total_spend'].mean()
+        
         if Config.CURRENT_MONTH < 12:
             next_period = f"{Config.CURRENT_YEAR}-{Config.CURRENT_MONTH+1:02d}"
         else:
             next_period = f"{Config.CURRENT_YEAR+1}-01"
         
-        # Simple forecast (10% growth)
-        current_actual = self.variance.get('total_actual', 1000000)
-        forecast_amount = current_actual * 1.10
+        current_actual = self.variance.get('total_actual', recent_avg)
+        blended_forecast = 0.7 * recent_avg + 0.3 * current_actual * 1.05
+        
+        std_dev = self.historical_data['total_spend'].std() if len(self.historical_data) > 1 else blended_forecast * 0.1
+        margin = 1.96 * std_dev / np.sqrt(len(self.historical_data)) if len(self.historical_data) > 1 else blended_forecast * 0.2
+        
+        lower_bound = max(0, blended_forecast - margin)
+        upper_bound = blended_forecast + margin
         
         self.forecast = {
             'next_period': next_period,
-            'forecast_amount': forecast_amount,
-            'lower_bound': forecast_amount * 0.9,
-            'upper_bound': forecast_amount * 1.1,
+            'forecast_amount': blended_forecast,
+            'lower_bound': lower_bound,
+            'upper_bound': upper_bound,
             'confidence_level': 0.95,
-            'method': 'Simple growth projection (10%)',
-            'historical_months_used': len(self.historical_data) if self.historical_data is not None else 0,
-            'current_actual': current_actual
+            'method': 'Blended (70% trend, 30% current)',
+            'historical_months_used': len(self.historical_data),
+            'current_actual': current_actual,
+            'recent_avg': recent_avg
         }
+        
+        print(f"\n   Forecast for {next_period}:")
+        print(f"   • Point forecast: ${self.forecast['forecast_amount']:,.2f}")
+        print(f"   • 95% CI: (${self.forecast['lower_bound']:,.2f} - ${self.forecast['upper_bound']:,.2f})")
         
         return self
     
     def save_forecast(self):
         """Save forecast results"""
-        self.output_path = Config.REPORTS_DIR / f"Forecast_{self.task_id}.csv"
         forecast_df = pd.DataFrame([self.forecast])
-        forecast_df.to_csv(self.output_path, index=False)
+        forecast_df.to_csv(f"{Config.REPORTS_PATH}Forecast_{self.forecast['next_period'].replace('-', '')}.csv", index=False)
         
         return self.forecast
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("🚀 T010: Forecasting Next Period")
+        print("="*60)
+        
+        self.load_historical()
+        self.calculate_trends()
+        forecast = self.save_forecast()
+        
+        print(f"\n✅ T010 Complete.")
+        return forecast
+
 
 # ============================================================================
-# API ENDPOINTS
+# DATA VALIDATOR
+# ============================================================================
+
+class DataValidator:
+    """Validate that all required data files exist"""
+    
+    @staticmethod
+    def validate_all():
+        """Run all validations"""
+        issues = []
+        
+        required_files = {
+            f"{Config.MASTER_DATA_PATH}Master_COA.csv": "Chart of Accounts",
+            f"{Config.MASTER_DATA_PATH}Master_Entity.csv": "Entity Master",
+            f"{Config.MASTER_DATA_PATH}Master_CostCenters.csv": "Cost Center Master",
+            f"{Config.BUDGET_PATH}Budget_2026.csv": "Budget Data",
+            Config.RAW_DATA_PATH: "Raw GL Export"
+        }
+        
+        print("\n📊 DATA VALIDATION")
+        print("-" * 40)
+        
+        for filepath, description in required_files.items():
+            if not os.path.exists(filepath):
+                issues.append(f"❌ Missing {description}: {filepath}")
+            else:
+                try:
+                    df = pd.read_csv(filepath)
+                    print(f"✅ {description}: {len(df)} rows")
+                except Exception as e:
+                    issues.append(f"❌ Cannot read {description}: {e}")
+        
+        if issues:
+            print("\n⚠️ DATA VALIDATION ISSUES FOUND:")
+            for issue in issues:
+                print(issue)
+            print("\n✅ Pipeline will continue but may use synthetic data where needed.\n")
+            return False
+        else:
+            print("\n✅ All master data files validated successfully.\n")
+            return True
+
+
+# ============================================================================
+# MAIN PIPELINE EXECUTOR
+# ============================================================================
+
+class FinancialCloseAgent:
+    """Main agent orchestrating all tasks"""
+    
+    def __init__(self):
+        self.results = {}
+        self.start_time = datetime.now()
+        
+    def run_pipeline(self):
+        """Execute all tasks in sequence"""
+        print("\n" + "="*80)
+        print("🚀 FINANCIAL CLOSE AGENT PIPELINE")
+        print(f"   Started: {self.start_time}")
+        print("="*80 + "\n")
+
+        # Validate data files
+        validator = DataValidator()
+        validator.validate_all()
+        
+        # Task 001: Wrangle Raw Data
+        wrangler = T001_DataWrangler()
+        df, anomalies = wrangler.run(Config.RAW_DATA_PATH)
+        self.results['df_t001'] = df
+        self.results['anomalies'] = anomalies
+        
+        # Task 002: Map Entities and Accounts
+        mapper = T002_EntityAccountMapper(df)
+        df = mapper.run()
+        self.results['df_t002'] = df
+        
+        # Task 003: Resolve Vendors
+        resolver = T003_VendorResolver(df)
+        df = resolver.run()
+        self.results['df_t003'] = df
+        
+        # Task 004: FX Conversion
+        converter = T004_FXConverter(df)
+        df = converter.run()
+        self.results['df_t004'] = df
+        
+        # Task 005: Detect Exceptions
+        detector = T005_ExceptionDetector(df)
+        df, exceptions = detector.run()
+        self.results['df_t005'] = df
+        self.results['exceptions'] = exceptions
+        
+        # Task 006: Review Exceptions (Automated)
+        reviewer = T006_ExceptionReviewer(df, exceptions)
+        df, review = reviewer.run()
+        self.results['df_t006'] = df
+        self.results['review'] = review
+        
+        # Task 007: Budget Variance
+        variance = T007_BudgetVariance(df)
+        variance_results = variance.run()
+        self.results['variance'] = variance_results
+        
+        # Task 008: Close Pack Report
+        report = T008_ClosePackReport(df, variance_results, exceptions)
+        report_data = report.run()
+        self.results['report'] = report_data
+        
+        # Task 009: Executive Narrative
+        narrative = T009_ExecutiveNarrative(variance_results, report_data, exceptions)
+        narrative_text = narrative.run()
+        self.results['narrative'] = narrative_text
+        
+        # Task 010: Forecast
+        forecast = T010_Forecast(df, variance_results)
+        forecast_data = forecast.run()
+        self.results['forecast'] = forecast_data
+        
+        # Completion
+        end_time = datetime.now()
+        duration = (end_time - self.start_time).total_seconds()
+        
+        print("\n" + "="*80)
+        print("✅ PIPELINE COMPLETE")
+        print(f"   Finished: {end_time}")
+        print(f"   Duration: {duration:.2f} seconds")
+        print("="*80)
+        
+        return self.results
+
+
+# ============================================================================
+# API ENDPOINTS - SIMPLIFIED
 # ============================================================================
 
 @app.get("/", tags=["Health"])
@@ -1698,985 +1911,346 @@ async def root():
         "service": "Financial Close Agent API",
         "version": "1.0.0",
         "status": "operational",
+        "description": "Single endpoint triggers complete financial close pipeline",
         "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/health", tags=["Health"])
 async def health_check():
     """Detailed health check endpoint"""
+    files_status = {}
+    required_paths = [
+        Config.RAW_DATA_PATH,
+        f"{Config.MASTER_DATA_PATH}Master_Entity.csv",
+        f"{Config.MASTER_DATA_PATH}Master_COA.csv",
+        f"{Config.MASTER_DATA_PATH}Master_CostCenters.csv",
+        f"{Config.MASTER_DATA_PATH}Master_Vendors.csv",
+        f"{Config.MASTER_DATA_PATH}Vendor_Alias_Map.csv",
+        f"{Config.REFERENCE_PATH}FX_Rates.csv",
+        f"{Config.REFERENCE_PATH}Exception_Rulebook.csv",
+        f"{Config.REFERENCE_PATH}KPI_Monthly_History.csv",
+        f"{Config.BUDGET_PATH}Budget_2026.csv"
+    ]
+    
+    for path in required_paths:
+        files_status[path] = os.path.exists(path)
+    
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "directories": {
-            "uploads": str(Config.UPLOAD_DIR),
-            "master_data": str(Config.MASTER_DATA_DIR),
-            "reports": str(Config.REPORTS_DIR)
-        }
+            "master_data": Config.MASTER_DATA_PATH,
+            "reference": Config.REFERENCE_PATH,
+            "budget": Config.BUDGET_PATH,
+            "working": Config.OUTPUT_PATH,
+            "reports": Config.REPORTS_PATH
+        },
+        "files_exist": files_status,
+        "fiscal_period": Config.CURRENT_FISCAL_PERIOD
     }
 
-# ============================================================================
-# UPLOAD ENDPOINTS
-# ============================================================================
-
-@app.post("/upload/gl", tags=["Upload"])
-async def upload_gl_file(file: UploadFile = File(...)):
-    """Upload raw GL export file"""
-    try:
-        if not file.filename.endswith('.csv'):
-            raise HTTPException(status_code=400, detail="Only CSV files are accepted")
-        
-        file_path = save_upload_file(file, Config.UPLOAD_DIR)
-        
-        # Quick validation
-        df = pd.read_csv(file_path)
-        
-        return {
-            "status": "success",
-            "filename": file.filename,
-            "path": file_path,
-            "rows": len(df),
-            "columns": list(df.columns)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/upload/master/{master_type}", tags=["Upload"])
-async def upload_master_file(master_type: str, file: UploadFile = File(...)):
-    """Upload master data files (entity, coa, cost_centers, vendors, alias)"""
-    valid_types = ["entity", "coa", "cost_centers", "vendors", "alias"]
-    
-    if master_type not in valid_types:
-        raise HTTPException(status_code=400, detail=f"Master type must be one of: {valid_types}")
-    
-    try:
-        if not file.filename.endswith('.csv'):
-            raise HTTPException(status_code=400, detail="Only CSV files are accepted")
-        
-        # Map to expected filenames
-        filename_map = {
-            "entity": "Master_Entity.csv",
-            "coa": "Master_COA.csv",
-            "cost_centers": "Master_CostCenters.csv",
-            "vendors": "Master_Vendors.csv",
-            "alias": "Vendor_Alias_Map.csv"
-        }
-        
-        # Save with correct name
-        file_path = Config.MASTER_DATA_DIR / filename_map[master_type]
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        return {
-            "status": "success",
-            "master_type": master_type,
-            "filename": filename_map[master_type],
-            "path": str(file_path)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/upload/reference/{ref_type}", tags=["Upload"])
-async def upload_reference_file(ref_type: str, file: UploadFile = File(...)):
-    """Upload reference files (fx_rates, exception_rules, kpi_history)"""
-    valid_types = ["fx_rates", "exception_rules", "kpi_history"]
-    
-    if ref_type not in valid_types:
-        raise HTTPException(status_code=400, detail=f"Reference type must be one of: {valid_types}")
-    
-    try:
-        if not file.filename.endswith('.csv'):
-            raise HTTPException(status_code=400, detail="Only CSV files are accepted")
-        
-        # Map to expected filenames
-        filename_map = {
-            "fx_rates": "FX_Rates.csv",
-            "exception_rules": "Exception_Rulebook.csv",
-            "kpi_history": "KPI_Monthly_History.csv"
-        }
-        
-        file_path = Config.REFERENCE_DIR / filename_map[ref_type]
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        return {
-            "status": "success",
-            "reference_type": ref_type,
-            "filename": filename_map[ref_type],
-            "path": str(file_path)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/upload/budget", tags=["Upload"])
-async def upload_budget_file(file: UploadFile = File(...)):
-    """Upload budget file"""
-    try:
-        if not file.filename.endswith('.csv'):
-            raise HTTPException(status_code=400, detail="Only CSV files are accepted")
-        
-        file_path = Config.BUDGET_DIR / "Budget_2026.csv"
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        return {
-            "status": "success",
-            "filename": "Budget_2026.csv",
-            "path": str(file_path)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# PROCESSING ENDPOINTS
-# ============================================================================
-
-@app.post("/process/t001", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t001(
+@app.post("/pipeline/run", response_model=PipelineResponse, tags=["Pipeline"])
+async def run_pipeline(
     background_tasks: BackgroundTasks,
-    file_path: str,
-    task_id: Optional[str] = None
+    validate_first: bool = True,
+    fiscal_period: str = "2026-02"
 ):
-    """Task 001: Wrangle raw GL data"""
-    task_id = task_id or generate_task_id()
+    """
+    Execute the complete financial close pipeline.
     
-    def run_task():
+    Reads from local files:
+    - Raw_GL_Export.csv
+    - Master_Data/*.csv
+    - Reference/*.csv
+    - Budget/Budget_2026.csv
+    
+    Writes to:
+    - working/*.csv
+    - reports/*.csv, *.json, *.txt, *.xlsx
+    
+    Returns a run_id for status checking.
+    """
+    # Update fiscal period if provided
+    if fiscal_period != Config.CURRENT_FISCAL_PERIOD:
+        Config.CURRENT_FISCAL_PERIOD = fiscal_period
+        year, month = fiscal_period.split('-')
+        Config.CURRENT_YEAR = int(year)
+        Config.CURRENT_MONTH = int(month)
+    
+    run_id = generate_run_id()
+    pipeline_manager.create_run(run_id)
+    
+    def execute_pipeline():
         try:
-            task_manager.update_task(task_id, "processing")
-            wrangler = T001_DataWrangler(file_path, task_id)
-            result = wrangler.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T001")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T001 processing started"
-    )
-
-@app.post("/process/t002", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t002(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 002: Map entities and accounts"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
-            mapper = T002_EntityAccountMapper(df, task_id, Config.MASTER_DATA_DIR)
-            result = mapper.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T002")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T002 processing started"
-    )
-
-@app.post("/process/t003", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t003(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 003: Resolve vendor names"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
-            resolver = T003_VendorResolver(df, task_id, Config.MASTER_DATA_DIR)
-            result = resolver.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T003")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T003 processing started"
-    )
-
-@app.post("/process/t004", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t004(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 004: Apply FX conversion"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
-            converter = T004_FXConverter(df, task_id, Config.REFERENCE_DIR)
-            result = converter.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T004")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T004 processing started"
-    )
-
-@app.post("/process/t005", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t005(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 005: Detect exceptions"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
-            detector = T005_ExceptionDetector(df, task_id, Config.REFERENCE_DIR)
-            result = detector.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T005")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T005 processing started"
-    )
-
-@app.post("/process/t006", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t006(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    exceptions_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 006: Review exceptions"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
-            exceptions = pd.read_csv(exceptions_file).to_dict('records') if os.path.exists(exceptions_file) else []
-            reviewer = T006_ExceptionReviewer(df, exceptions, task_id)
-            result = reviewer.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T006")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T006 processing started"
-    )
-
-@app.post("/process/t007", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t007(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 007: Compute budget variance"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
-            variance = T007_BudgetVariance(df, task_id, Config.BUDGET_DIR)
-            result = variance.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T007")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T007 processing started"
-    )
-
-@app.post("/process/t008", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t008(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    variance_file: str,
-    exceptions_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 008: Generate close pack report"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
+            pipeline_manager.update_run(run_id, status="running", progress=5, current_task="validation")
             
-            # Load variance results
-            with open(variance_file, 'r') as f:
-                variance_results = json.load(f)
+            # Optional validation
+            if validate_first:
+                validator = DataValidator()
+                validator.validate_all()
             
-            exceptions = pd.read_csv(exceptions_file).to_dict('records') if os.path.exists(exceptions_file) else []
+            pipeline_manager.update_run(run_id, progress=10, current_task="T001")
             
-            report = T008_ClosePackReport(df, variance_results, exceptions, task_id)
-            result = report.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T008")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T008 processing started"
-    )
-
-@app.post("/process/t009", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t009(
-    background_tasks: BackgroundTasks,
-    variance_file: str,
-    report_file: str,
-    exceptions_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 009: Generate executive narrative"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
+            # Create and run the agent
+            agent = FinancialCloseAgent()
+            results = agent.run_pipeline()
             
-            with open(variance_file, 'r') as f:
-                variance_results = json.load(f)
-            
-            with open(report_file, 'r') as f:
-                report_data = json.load(f)
-            
-            exceptions = pd.read_csv(exceptions_file).to_dict('records') if os.path.exists(exceptions_file) else []
-            
-            narrative = T009_ExecutiveNarrative(variance_results, report_data, exceptions, task_id)
-            result = narrative.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T009")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T009 processing started"
-    )
-
-@app.post("/process/t010", response_model=ProcessingResponse, tags=["Processing"])
-async def process_t010(
-    background_tasks: BackgroundTasks,
-    data_file: str,
-    variance_file: str,
-    task_id: Optional[str] = None
-):
-    """Task 010: Forecast next period"""
-    task_id = task_id or generate_task_id()
-    
-    def run_task():
-        try:
-            task_manager.update_task(task_id, "processing")
-            df = pd.read_csv(data_file)
-            
-            with open(variance_file, 'r') as f:
-                variance_results = json.load(f)
-            
-            forecast = T010_Forecast(df, variance_results, task_id, Config.REFERENCE_DIR)
-            result = forecast.run()
-            task_manager.update_task(task_id, "completed", result)
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "T010")
-    background_tasks.add_task(run_task)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="T010 processing started"
-    )
-
-@app.post("/process/full", response_model=ProcessingResponse, tags=["Processing"])
-async def process_full_pipeline(
-    background_tasks: BackgroundTasks,
-    gl_file_path: str,
-    task_id: Optional[str] = None
-):
-    """Run the complete financial close pipeline"""
-    task_id = task_id or generate_task_id()
-    
-    def run_pipeline():
-        try:
-            task_manager.update_task(task_id, "processing")
-            
-            results = {}
-            
-            # T001: Wrangle
-            wrangler = T001_DataWrangler(gl_file_path, task_id)
-            t001_result = wrangler.run()
-            results['t001'] = t001_result
-            df = pd.read_csv(t001_result['output_files']['standardized_data'])
-            
-            # T002: Map entities and accounts
-            mapper = T002_EntityAccountMapper(df, task_id, Config.MASTER_DATA_DIR)
-            t002_result = mapper.run()
-            results['t002'] = t002_result
-            df = pd.read_csv(t002_result['output_file'])
-            
-            # T003: Resolve vendors
-            resolver = T003_VendorResolver(df, task_id, Config.MASTER_DATA_DIR)
-            t003_result = resolver.run()
-            results['t003'] = t003_result
-            df = pd.read_csv(t003_result['output_file'])
-            
-            # T004: FX Conversion
-            converter = T004_FXConverter(df, task_id, Config.REFERENCE_DIR)
-            t004_result = converter.run()
-            results['t004'] = t004_result
-            df = pd.read_csv(t004_result['output_file'])
-            
-            # T005: Detect exceptions
-            detector = T005_ExceptionDetector(df, task_id, Config.REFERENCE_DIR)
-            t005_result = detector.run()
-            results['t005'] = t005_result
-            df = pd.read_csv(t005_result['output_file'])
-            exceptions = pd.read_csv(t005_result['exceptions_file']).to_dict('records') if t005_result.get('exceptions_file') and Path(t005_result['exceptions_file']).exists() else []
-            
-            # T006: Review exceptions
-            reviewer = T006_ExceptionReviewer(df, exceptions, task_id)
-            t006_result = reviewer.run()
-            results['t006'] = t006_result
-            
-            # T007: Budget variance
-            variance = T007_BudgetVariance(df, task_id, Config.BUDGET_DIR)
-            t007_result = variance.run()
-            results['t007'] = t007_result
-            
-            # Save variance results for later tasks
-            variance_path = Config.WORKING_DIR / f"variance_results_{task_id}.json"
-            with open(variance_path, 'w') as f:
-                json.dump(t007_result, f, default=str)
-            
-            # T008: Close pack report
-            report = T008_ClosePackReport(df, t007_result, exceptions, task_id)
-            t008_result = report.run()
-            results['t008'] = t008_result
-            
-            # Save report data
-            report_path = Config.WORKING_DIR / f"report_data_{task_id}.json"
-            with open(report_path, 'w') as f:
-                json.dump(t008_result['report_data'], f, default=str)
-            
-            # T009: Executive narrative
-            narrative = T009_ExecutiveNarrative(t007_result, t008_result['report_data'], exceptions, task_id)
-            t009_result = narrative.run()
-            results['t009'] = t009_result
-            
-            # T010: Forecast
-            forecast = T010_Forecast(df, t007_result, task_id, Config.REFERENCE_DIR)
-            t010_result = forecast.run()
-            results['t010'] = t010_result
-            
-            # Save final pipeline summary
-            summary_path = Config.REPORTS_DIR / f"Pipeline_Summary_{task_id}.json"
-            with open(summary_path, 'w') as f:
-                json.dump(results, f, indent=2, default=str)
-            
-            task_manager.update_task(task_id, "completed", {
-                "summary": {
-                    "tasks_completed": list(results.keys()),
-                    "total_transactions": int(t001_result['rows_processed']),
-                    "total_exceptions": t005_result['total_exceptions'],
-                    "total_spend": float(t007_result['total_actual']),
-                    "budget_variance": float(t007_result['total_variance']),
-                    "forecast_next_period": float(t010_result['forecast_amount'])
-                },
-                "output_files": {
-                    "standardized_data": t001_result['output_files']['standardized_data'],
-                    "mapped_data": t002_result['output_file'],
-                    "vendor_resolved": t003_result['output_file'],
-                    "converted_data": t004_result['output_file'],
-                    "exceptions": t005_result['exceptions_file'],
-                    "variance_summary": t007_result['output_files']['summary'],
-                    "report_summary": str(summary_path),
-                    "narrative": t009_result['file_path'],
-                    "forecast": t010_result['file_path']
-                }
-            })
-            
-        except Exception as e:
-            task_manager.update_task(task_id, "failed", error=str(e))
-    
-    task_manager.create_task(task_id, "FULL_PIPELINE")
-    background_tasks.add_task(run_pipeline)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="pending",
-        message="Full pipeline processing started"
-    )
-
-# ============================================================================
-# TASK STATUS ENDPOINTS
-# ============================================================================
-
-@app.get("/tasks", tags=["Tasks"])
-async def get_all_tasks():
-    """Get all tasks"""
-    return task_manager.get_all_tasks()
-
-@app.get("/tasks/{task_id}", tags=["Tasks"])
-async def get_task_status(task_id: str):
-    """Get task status by ID"""
-    task = task_manager.get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task
-
-@app.delete("/tasks/{task_id}", tags=["Tasks"])
-async def delete_task(task_id: str):
-    """Delete task by ID"""
-    if task_id in task_manager.tasks:
-        del task_manager.tasks[task_id]
-        return {"status": "success", "message": f"Task {task_id} deleted"}
-    raise HTTPException(status_code=404, detail="Task not found")
-
-# ============================================================================
-# DATA RETRIEVAL ENDPOINTS
-# ============================================================================
-
-@app.get("/data/gl/{task_id}", tags=["Data"])
-async def get_gl_data(task_id: str):
-    """Get processed GL data for a task"""
-    task = task_manager.get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    if task['status'] != 'completed':
-        raise HTTPException(status_code=400, detail="Task not completed yet")
-    
-    # Try to find the output file
-    possible_files = [
-        Config.WORKING_DIR / f"GL_Standardized_{task_id}.csv",
-        Config.WORKING_DIR / f"GL_WithMappings_{task_id}.csv",
-        Config.WORKING_DIR / f"GL_VendorsResolved_{task_id}.csv",
-        Config.WORKING_DIR / f"GL_Converted_{task_id}.csv",
-        Config.WORKING_DIR / f"GL_WithExceptions_{task_id}.csv"
-    ]
-    
-    for file_path in possible_files:
-        if file_path.exists():
-            return FileResponse(
-                path=file_path,
-                filename=file_path.name,
-                media_type='text/csv'
-            )
-    
-    raise HTTPException(status_code=404, detail="Data file not found")
-
-@app.get("/reports/{task_id}", tags=["Reports"])
-async def get_report(task_id: str, report_type: str = "summary"):
-    """Get report files for a task"""
-    valid_reports = ["summary", "anomalies", "exceptions", "variance", "forecast", "narrative"]
-    
-    if report_type not in valid_reports:
-        raise HTTPException(status_code=400, detail=f"Report type must be one of: {valid_reports}")
-    
-    report_files = {
-        "summary": f"Pipeline_Summary_{task_id}.json",
-        "anomalies": f"Input_Anomalies_{task_id}.csv",
-        "exceptions": f"Exceptions_Detailed_{task_id}.csv",
-        "variance": f"Budget_Variance_Summary_{task_id}.csv",
-        "forecast": f"Forecast_{task_id}.csv",
-        "narrative": f"Executive_Narrative_{task_id}.txt"
-    }
-    
-    file_name = report_files[report_type]
-    file_path = Config.REPORTS_DIR / file_name
-    
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"{report_type} report not found")
-    
-    media_type = 'application/json' if file_name.endswith('.json') else 'text/csv' if file_name.endswith('.csv') else 'text/plain'
-    
-    return FileResponse(
-        path=file_path,
-        filename=file_name,
-        media_type=media_type
-    )
-
-# ============================================================================
-# ANALYSIS ENDPOINTS
-# ============================================================================
-
-@app.post("/analyze/variance", tags=["Analysis"])
-async def calculate_variance(data_file: str, budget_file: Optional[str] = None):
-    """Calculate budget variance from processed data"""
-    try:
-        # Load data
-        df = pd.read_csv(data_file)
-        
-        # Basic variance calculation
-        total_actual = df['amount_aud'].sum() if 'amount_aud' in df.columns else df['amount'].sum() if 'amount' in df.columns else 0
-        
-        if budget_file and os.path.exists(budget_file):
-            budget_df = pd.read_csv(budget_file)
-            budget_col = 'budget_amount' if 'budget_amount' in budget_df.columns else 'amount' if 'amount' in budget_df.columns else None
-            total_budget = budget_df[budget_col].sum() if budget_col else total_actual * 1.05
-        else:
-            total_budget = total_actual * 1.05  # Placeholder
-        
-        variance = total_actual - total_budget
-        variance_pct = (variance / total_budget * 100) if total_budget != 0 else 0
-        
-        return {
-            "total_actual": float(total_actual),
-            "total_budget": float(total_budget),
-            "variance": float(variance),
-            "variance_percentage": float(variance_pct),
-            "transaction_count": int(len(df))
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/analyze/forecast", tags=["Analysis"])
-async def generate_forecast(data_file: str):
-    """Generate forecast for next period"""
-    try:
-        # Load current data
-        df = pd.read_csv(data_file)
-        amount_col = 'amount_aud' if 'amount_aud' in df.columns else 'amount' if 'amount' in df.columns else None
-        current_total = df[amount_col].sum() if amount_col else 0
-        
-        # Simple forecast (10% growth)
-        forecast = current_total * 1.10
-        
-        # Calculate next period
-        if Config.CURRENT_MONTH < 12:
-            next_period = f"{Config.CURRENT_YEAR}-{Config.CURRENT_MONTH+1:02d}"
-        else:
-            next_period = f"{Config.CURRENT_YEAR+1}-01"
-        
-        return {
-            "next_period": next_period,
-            "forecast_amount": float(forecast),
-            "lower_bound": float(forecast * 0.9),
-            "upper_bound": float(forecast * 1.1),
-            "confidence_level": 0.95,
-            "method": "Simple growth projection"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# FILE MANAGEMENT ENDPOINTS
-# ============================================================================
-
-@app.get("/files", tags=["Files"])
-async def list_files(directory: str = "uploads"):
-    """List files in a directory"""
-    valid_dirs = ["uploads", "master_data", "reference", "budget", "working", "reports"]
-    
-    if directory not in valid_dirs:
-        raise HTTPException(status_code=400, detail=f"Directory must be one of: {valid_dirs}")
-    
-    dir_path = getattr(Config, f"{directory.upper()}_DIR")
-    
-    files = []
-    for file_path in dir_path.glob("*"):
-        if file_path.is_file():
-            files.append({
-                "name": file_path.name,
-                "size": file_path.stat().st_size,
-                "modified": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
-            })
-    
-    return {
-        "directory": directory,
-        "path": str(dir_path),
-        "files": files
-    }
-
-@app.delete("/files/{filename}", tags=["Files"])
-async def delete_file(filename: str, directory: str = "uploads"):
-    """Delete a file"""
-    valid_dirs = ["uploads", "master_data", "reference", "budget", "working", "reports"]
-    
-    if directory not in valid_dirs:
-        raise HTTPException(status_code=400, detail=f"Directory must be one of: {valid_dirs}")
-    
-    dir_path = getattr(Config, f"{directory.upper()}_DIR")
-    file_path = dir_path / filename
-    
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path.unlink()
-    
-    return {
-        "status": "success",
-        "message": f"File {filename} deleted from {directory}"
-    }
-
-# ============================================================================
-# VALIDATION ENDPOINTS
-# ============================================================================
-
-@app.post("/validate/gl", tags=["Validation"])
-async def validate_gl_file(file: UploadFile = File(...)):
-    """Validate GL file structure"""
-    try:
-        # Save temporarily
-        temp_path = Config.UPLOAD_DIR / f"temp_{file.filename}"
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Load and validate
-        df = pd.read_csv(temp_path)
-        
-        required_columns = ['Txn_ID', 'Posting_Date_Raw', 'Fiscal_Period', 'Entity', 
-                           'Account_Code_Raw', 'Amount']
-        
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        
-        # Clean up
-        temp_path.unlink()
-        
-        if missing_columns:
-            return {
-                "valid": False,
-                "missing_columns": missing_columns,
-                "message": f"Missing required columns: {missing_columns}"
+            # Extract summary for response
+            summary = {
+                "total_transactions": len(results.get('df_t001', pd.DataFrame())),
+                "total_exceptions": len(results.get('exceptions', [])),
+                "critical_exceptions": len([e for e in results.get('exceptions', []) 
+                                           if e.get('severity') == 'CRITICAL']),
+                "total_spend": results.get('variance', {}).get('total_actual', 0),
+                "budget_variance": results.get('variance', {}).get('total_variance', 0),
+                "variance_percentage": results.get('variance', {}).get('total_variance_pct', 0),
+                "forecast_next_period": results.get('forecast', {}).get('forecast_amount', 0)
             }
-        
-        return {
-            "valid": True,
-            "rows": len(df),
-            "columns": list(df.columns),
-            "message": "GL file structure is valid"
+            
+            pipeline_manager.complete_run(run_id, summary)
+            
+        except Exception as e:
+            pipeline_manager.fail_run(run_id, str(e))
+    
+    background_tasks.add_task(execute_pipeline)
+    
+    return PipelineResponse(
+        run_id=run_id,
+        status="started",
+        message="Pipeline execution started",
+        start_time=datetime.now().isoformat(),
+        summary=None
+    )
+
+@app.get("/pipeline/status/{run_id}", response_model=PipelineStatus, tags=["Pipeline"])
+async def get_pipeline_status(run_id: str):
+    """
+    Check the status of a pipeline run.
+    
+    Returns progress, current task, and final results when complete.
+    """
+    run = pipeline_manager.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run ID {run_id} not found")
+    
+    return PipelineStatus(**run)
+
+@app.post("/pipeline/validate", tags=["Pipeline"])
+async def validate_files():
+    """
+    Validate that all required input files exist and are readable.
+    Does not execute the pipeline.
+    """
+    issues = []
+    files_checked = []
+    
+    required_files = {
+        f"{Config.MASTER_DATA_PATH}Master_COA.csv": "Chart of Accounts",
+        f"{Config.MASTER_DATA_PATH}Master_Entity.csv": "Entity Master",
+        f"{Config.MASTER_DATA_PATH}Master_CostCenters.csv": "Cost Center Master",
+        f"{Config.MASTER_DATA_PATH}Master_Vendors.csv": "Vendor Master",
+        f"{Config.MASTER_DATA_PATH}Vendor_Alias_Map.csv": "Vendor Alias Map",
+        f"{Config.REFERENCE_PATH}FX_Rates.csv": "FX Rates",
+        f"{Config.REFERENCE_PATH}Exception_Rulebook.csv": "Exception Rulebook",
+        f"{Config.REFERENCE_PATH}KPI_Monthly_History.csv": "KPI History",
+        f"{Config.BUDGET_PATH}Budget_2026.csv": "Budget Data",
+        Config.RAW_DATA_PATH: "Raw GL Export"
+    }
+    
+    for filepath, description in required_files.items():
+        file_info = {
+            "path": filepath,
+            "exists": os.path.exists(filepath),
+            "readable": False,
+            "row_count": None
         }
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# CONFIGURATION ENDPOINTS
-# ============================================================================
-
-@app.get("/config", tags=["Configuration"])
-async def get_config():
-    """Get current configuration"""
-    return {
-        "current_fiscal_period": Config.CURRENT_FISCAL_PERIOD,
-        "current_month": Config.CURRENT_MONTH,
-        "current_year": Config.CURRENT_YEAR,
-        "high_value_threshold": Config.HIGH_VALUE_THRESHOLD,
-        "directories": {
-            "uploads": str(Config.UPLOAD_DIR),
-            "master_data": str(Config.MASTER_DATA_DIR),
-            "reference": str(Config.REFERENCE_DIR),
-            "budget": str(Config.BUDGET_DIR),
-            "working": str(Config.WORKING_DIR),
-            "reports": str(Config.REPORTS_DIR)
-        }
-    }
-
-@app.post("/config/fiscal", tags=["Configuration"])
-async def set_fiscal_period(year: int, month: int):
-    """Set current fiscal period"""
-    if month < 1 or month > 12:
-        raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
-    
-    Config.CURRENT_YEAR = year
-    Config.CURRENT_MONTH = month
-    Config.CURRENT_FISCAL_PERIOD = f"{year}-{month:02d}"
-    
-    return {
-        "status": "success",
-        "current_fiscal_period": Config.CURRENT_FISCAL_PERIOD
-    }
-
-# ============================================================================
-# BATCH PROCESSING ENDPOINTS
-# ============================================================================
-
-@app.post("/batch/process", tags=["Batch"])
-async def batch_process(files: List[str], background_tasks: BackgroundTasks):
-    """Process multiple files in batch"""
-    batch_id = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    
-    def run_batch():
-        results = {}
-        for i, file_path in enumerate(files):
+        if file_info["exists"]:
             try:
-                task_id = f"{batch_id}_{i}"
-                task_manager.create_task(task_id, "BATCH")
-                
-                # Run T001 on each file
-                wrangler = T001_DataWrangler(file_path, task_id)
-                result = wrangler.run()
-                
-                results[file_path] = {
-                    "status": "success",
-                    "task_id": task_id,
-                    "result": result
-                }
-            except Exception as e:
-                results[file_path] = {
-                    "status": "failed",
-                    "error": str(e)
-                }
+                df = pd.read_csv(filepath)
+                file_info["readable"] = True
+                file_info["row_count"] = len(df)
+            except:
+                issues.append(f"Cannot read {description}: {filepath}")
+        else:
+            issues.append(f"Missing {description}: {filepath}")
         
-        # Save batch results
-        batch_path = Config.REPORTS_DIR / f"{batch_id}_results.json"
-        with open(batch_path, 'w') as f:
-            json.dump(results, f, indent=2, default=str)
-    
-    background_tasks.add_task(run_batch)
+        files_checked.append(file_info)
     
     return {
-        "batch_id": batch_id,
-        "status": "processing",
-        "file_count": len(files),
-        "message": f"Batch processing started with ID: {batch_id}"
+        "valid": len(issues) == 0,
+        "issues": issues,
+        "files_checked": files_checked,
+        "fiscal_period": Config.CURRENT_FISCAL_PERIOD
     }
 
-@app.get("/batch/{batch_id}", tags=["Batch"])
-async def get_batch_status(batch_id: str):
-    """Get batch processing status"""
-    batch_path = Config.REPORTS_DIR / f"{batch_id}_results.json"
-    
-    if not batch_path.exists():
-        raise HTTPException(status_code=404, detail="Batch not found")
-    
-    with open(batch_path, 'r') as f:
-        results = json.load(f)
-    
-    return {
-        "batch_id": batch_id,
-        "status": "completed",
-        "results": results
-    }
+from fastapi.responses import FileResponse, JSONResponse
+import json
+import pandas as pd
+from pathlib import Path
 
 # ============================================================================
-# EXPORT ENDPOINTS
+# DATA ACCESS ENDPOINTS FOR WATSONX ORCHESTRATE
 # ============================================================================
 
-@app.get("/export/{task_id}/{format}", tags=["Export"])
-async def export_results(task_id: str, format: str = "json"):
-    """Export task results in specified format"""
-    valid_formats = ["json", "csv", "excel"]
-    
-    if format not in valid_formats:
-        raise HTTPException(status_code=400, detail=f"Format must be one of: {valid_formats}")
-    
-    task = task_manager.get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    if task['status'] != 'completed':
-        raise HTTPException(status_code=400, detail="Task not completed yet")
-    
-    if format == "json":
-        # Return JSON response
-        return JSONResponse(content=task)
-    
-    elif format == "csv":
-        # Create CSV export
-        export_path = Config.REPORTS_DIR / f"export_{task_id}.csv"
+@app.get("/data/summary", tags=["Watsonx"])
+async def get_summary_data():
+    """Get summary data in JSON format for Watsonx Orchestrate"""
+    try:
+        # Read the variance summary
+        variance_path = Path(Config.REPORTS_PATH) / "Budget_Variance_Summary.csv"
+        if not variance_path.exists():
+            return {"error": "No summary data available"}
         
-        # Convert task data to DataFrame
-        if task['result'] and isinstance(task['result'], dict):
-            # Flatten nested dict for CSV
-            flat_data = {}
-            for key, value in task['result'].items():
-                if isinstance(value, (dict, list)):
-                    flat_data[key] = str(value)
-                else:
-                    flat_data[key] = value
-            
-            df = pd.DataFrame([flat_data])
-            df.to_csv(export_path, index=False)
-            
-            return FileResponse(
-                path=export_path,
-                filename=f"task_{task_id}_export.csv",
-                media_type='text/csv'
-            )
-    
-    elif format == "excel":
-        # Create Excel export
-        export_path = Config.REPORTS_DIR / f"export_{task_id}.xlsx"
+        df = pd.read_csv(variance_path)
+        summary = df.to_dict('records')
         
-        with pd.ExcelWriter(export_path, engine='openpyxl') as writer:
-            # Write task info
-            task_info = pd.DataFrame([{
-                'task_id': task['task_id'],
-                'status': task['status'],
-                'created_at': task['created_at'],
-                'task_type': task['task_type']
-            }])
-            task_info.to_excel(writer, sheet_name='Task Info', index=False)
-            
-            # Write result data if available
-            if task['result'] and isinstance(task['result'], dict):
-                # Flatten for Excel
-                flat_data = {}
-                for key, value in task['result'].items():
-                    if isinstance(value, (dict, list)):
-                        flat_data[key] = str(value)
-                    else:
-                        flat_data[key] = value
-                
-                result_df = pd.DataFrame([flat_data])
-                result_df.to_excel(writer, sheet_name='Results', index=False)
+        # Read exceptions count
+        exceptions_path = Path(Config.REPORTS_PATH) / "Exceptions_Detailed.csv"
+        exception_count = len(pd.read_csv(exceptions_path)) if exceptions_path.exists() else 0
         
-        return FileResponse(
-            path=export_path,
-            filename=f"task_{task_id}_export.xlsx",
-            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        # Read narrative
+        narrative_path = Path(Config.REPORTS_PATH) / f"Executive_Narrative_{Config.CURRENT_FISCAL_PERIOD.replace('-', '')}.txt"
+        narrative = ""
+        if narrative_path.exists():
+            with open(narrative_path, 'r') as f:
+                narrative = f.read()
+        
+        # Read forecast
+        forecast_path = Path(Config.REPORTS_PATH) / f"Forecast_{Config.CURRENT_YEAR}{Config.CURRENT_MONTH+1:02d}.csv"
+        forecast = []
+        if forecast_path.exists():
+            forecast_df = pd.read_csv(forecast_path)
+            forecast = forecast_df.to_dict('records')
+        
+        return JSONResponse({
+            "fiscal_period": Config.CURRENT_FISCAL_PERIOD,
+            "summary": summary,
+            "exception_count": exception_count,
+            "narrative": narrative[:500] + "..." if len(narrative) > 500 else narrative,
+            "forecast": forecast[0] if forecast else None,
+            "generated_at": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/data/variance", tags=["Watsonx"])
+async def get_variance_data(format: str = "json"):
+    """Get budget variance data"""
+    file_path = Path(Config.REPORTS_PATH) / "Budget_Variance_By_Account.csv"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Variance data not found")
     
-    raise HTTPException(status_code=400, detail="Export failed")
+    if format == "csv":
+        return FileResponse(path=file_path, filename="budget_variance.csv")
+    else:
+        df = pd.read_csv(file_path)
+        return JSONResponse(df.to_dict('records'))
+
+@app.get("/data/exceptions", tags=["Watsonx"])
+async def get_exceptions_data(severity: Optional[str] = None, limit: int = 100):
+    """Get exceptions data with optional filtering"""
+    file_path = Path(Config.REPORTS_PATH) / "Exceptions_Detailed.csv"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Exceptions data not found")
+    
+    df = pd.read_csv(file_path)
+    
+    if severity:
+        df = df[df['severity'] == severity.upper()]
+    
+    # Limit results
+    df = df.head(limit)
+    
+    return JSONResponse(df.to_dict('records'))
+
+@app.get("/data/narrative", tags=["Watsonx"])
+async def get_narrative():
+    """Get the executive narrative"""
+    file_path = Path(Config.REPORTS_PATH) / f"Executive_Narrative_{Config.CURRENT_FISCAL_PERIOD.replace('-', '')}.txt"
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Narrative not found")
+    
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    return JSONResponse({
+        "fiscal_period": Config.CURRENT_FISCAL_PERIOD,
+        "narrative": content,
+        "length": len(content)
+    })
+
+@app.get("/data/forecast", tags=["Watsonx"])
+async def get_forecast():
+    """Get forecast data"""
+    file_path = Path(Config.REPORTS_PATH) / f"Forecast_{Config.CURRENT_YEAR}{Config.CURRENT_MONTH+1:02d}.csv"
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Forecast not found")
+    
+    df = pd.read_csv(file_path)
+    return JSONResponse(df.to_dict('records')[0])
+
+@app.get("/data/latest-run", tags=["Watsonx"])
+async def get_latest_run():
+    """Get information about the latest pipeline run"""
+    runs = pipeline_manager.runs
+    if not runs:
+        return JSONResponse({"status": "no_runs"})
+    
+    latest_run_id = max(runs.keys(), key=lambda k: runs[k]["start_time"])
+    latest_run = runs[latest_run_id]
+    
+    return JSONResponse({
+        "run_id": latest_run_id,
+        "status": latest_run["status"],
+        "start_time": latest_run["start_time"],
+        "end_time": latest_run["end_time"],
+        "duration_seconds": latest_run["duration_seconds"],
+        "summary": latest_run["summary"],
+        "fiscal_period": Config.CURRENT_FISCAL_PERIOD
+    })
+
+@app.get("/data/files", tags=["Watsonx"])
+async def list_available_data():
+    """List all available data files for Watsonx to consume"""
+    files = []
+    
+    # List all CSV files in reports
+    for file_path in Path(Config.REPORTS_PATH).glob("*.csv"):
+        files.append({
+            "name": file_path.name,
+            "type": "csv",
+            "size": file_path.stat().st_size,
+            "endpoint": f"/data/{file_path.stem.lower().replace('_', '-')}",
+            "generated": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
+        })
+    
+    # List all text files
+    for file_path in Path(Config.REPORTS_PATH).glob("*.txt"):
+        files.append({
+            "name": file_path.name,
+            "type": "text",
+            "size": file_path.stat().st_size,
+            "endpoint": f"/data/{file_path.stem.lower().replace('_', '-')}",
+            "generated": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
+        })
+    
+    return JSONResponse({
+        "base_url": "https://finance-usecase.onrender.com",
+        "fiscal_period": Config.CURRENT_FISCAL_PERIOD,
+        "available_data": files,
+        "endpoints": {
+            "summary": "/data/summary",
+            "variance": "/data/variance",
+            "exceptions": "/data/exceptions",
+            "narrative": "/data/narrative",
+            "forecast": "/data/forecast",
+            "latest_run": "/data/latest-run"
+        }
+    })
+
 
 # ============================================================================
 # MAIN ENTRY POINT
@@ -2684,6 +2258,20 @@ async def export_results(task_id: str, format: str = "json"):
 
 if __name__ == "__main__":
     import uvicorn
+    print("\n" + "="*60)
+    print("🚀 FINANCIAL CLOSE AGENT API")
+    print("="*60)
+    print(f"Master Data:   {Config.MASTER_DATA_PATH}")
+    print(f"Reference:     {Config.REFERENCE_PATH}")
+    print(f"Budget:        {Config.BUDGET_PATH}")
+    print(f"Working:       {Config.OUTPUT_PATH}")
+    print(f"Reports:       {Config.REPORTS_PATH}")
+    print("="*60)
+    print("Endpoint: POST /pipeline/run - triggers complete pipeline")
+    print("Endpoint: GET  /pipeline/status/{run_id} - check progress")
+    print("Endpoint: POST /pipeline/validate - validate files only")
+    print("="*60 + "\n")
+    
     uvicorn.run(
         "financial_close_api:app",
         host="0.0.0.0",
