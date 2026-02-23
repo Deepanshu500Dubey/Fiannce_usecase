@@ -1,0 +1,11 @@
+Task_ID,Task_Name,Task_Type,Priority,Status,Assigned_To,Due_Date,Description
+T001,Wrangle Raw GL Data,Data Processing,High,Pending,AI Agent,2026-02-28,Parse and standardize raw GL export data including date formats and field normalization
+T002,Map Entities and Accounts,Data Enrichment,High,Pending,AI Agent,2026-02-28,Resolve entity codes and account codes against master data
+T003,Resolve Vendor Names,Data Enrichment,High,Pending,AI Agent,2026-02-28,Map vendor aliases to canonical vendor names using Vendor_Alias_Map
+T004,Apply FX Conversion,Data Processing,High,Pending,AI Agent,2026-02-28,Convert all transactions to AUD using FX_Rates table
+T005,Detect Exceptions,Quality Control,Critical,Pending,AI Agent,2026-02-28,Run all exception rules from Exception_Rulebook and flag violations
+T006,Review High Severity Exceptions,Approval Gate,Critical,Pending,Finance Manager,2026-02-28,Human review and approval of critical and high severity exceptions
+T007,Compute Budget Variance,Reporting,Medium,Pending,AI Agent,2026-02-28,Calculate actual vs budget variance for Feb 2026
+T008,Generate Close Pack Report,Reporting,High,Pending,AI Agent,2026-02-28,Create comprehensive month-end close report with all metrics
+T009,Generate Executive Narrative,Reporting,Medium,Pending,AI Agent,2026-02-28,Create natural language summary of financial results and key insights
+T010,Forecast Next Period,Analytics,Medium,Pending,AI Agent,2026-02-28,Generate forecast for March 2026 based on historical trends

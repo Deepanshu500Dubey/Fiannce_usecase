@@ -1,0 +1,48 @@
+Vendor_Name_Raw,Vendor_Name_Canonical,Confidence
+AWS,Amazon Web Services,High
+Amazon,Amazon Web Services,High
+MSFT,Microsoft Corporation,High
+Microsoft,Microsoft Corporation,High
+MS Office,Microsoft Corporation,Medium
+Salesforce,Salesforce Inc,High
+SFDC,Salesforce Inc,High
+Google,Google Cloud,Medium
+GCP,Google Cloud,High
+Google Cloud Platform,Google Cloud,High
+Atlassian Pty,Atlassian,High
+Slack,Slack Technologies,High
+Zoom,Zoom Video Communications,High
+Adobe,Adobe Systems,High
+Oracle,Oracle Corporation,High
+SAP,SAP SE,High
+Workday,Workday Inc,High
+ServiceNow Inc,ServiceNow,High
+Accenture Pty,Accenture,High
+Deloitte Touche,Deloitte,High
+PricewaterhouseCoopers,PwC,High
+PWC,PwC,High
+KPMG Australia,KPMG,High
+Ernst & Young,EY,High
+EY Australia,EY,High
+McKinsey,McKinsey & Company,High
+BCG,Boston Consulting Group,High
+Bain,Bain & Company,High
+WeWork Australia,WeWork,High
+Regus Australia,Regus,High
+Jones Lang LaSalle,JLL,High
+CB Richard Ellis,CBRE,High
+Cushman,Cushman & Wakefield,Medium
+Federal Express,FedEx,High
+DHL Express,DHL,High
+United Parcel Service,UPS,High
+AusPost,Australia Post,High
+Telstra Corp,Telstra,High
+Optus Pty,Optus,High
+Vodafone Australia,Vodafone,High
+LinkedIn Corp,LinkedIn,High
+Indeed Inc,Indeed,High
+Seek Limited,Seek,High
+Hays,Hays Recruitment,High
+Robert Half International,Robert Half,High
+Randstad NV,Randstad,High
+Manpower Group,Manpower,High

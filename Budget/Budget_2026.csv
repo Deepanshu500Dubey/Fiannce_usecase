@@ -1,0 +1,61 @@
+Fiscal_Period,Entity,Account_Code,Cost_Center,Budget_Amount_AUD,Budget_Type,Notes
+2026-01,AUS01,5000,CC1000,450000,Operating,Engineering salaries
+2026-01,AUS01,5000,CC1100,180000,Operating,Product Management salaries
+2026-01,AUS01,5000,CC2000,220000,Operating,Sales salaries
+2026-01,AUS01,5000,CC2100,150000,Operating,Marketing salaries
+2026-01,AUS01,5000,CC3000,120000,Operating,Finance salaries
+2026-01,AUS01,5010,CC1000,90000,Operating,Engineering benefits
+2026-01,AUS01,5010,CC1100,36000,Operating,Product benefits
+2026-01,AUS01,5010,CC2000,44000,Operating,Sales benefits
+2026-01,AUS01,5010,CC2100,30000,Operating,Marketing benefits
+2026-01,AUS01,5020,CC1000,120000,Operating,Contractor fees
+2026-01,AUS01,5100,CC1000,85000,Operating,Office rent
+2026-01,AUS01,5110,CC1000,12000,Operating,Utilities
+2026-01,AUS01,5120,CC1000,8000,Operating,Office supplies
+2026-01,AUS01,5200,CC1200,95000,Operating,Software licenses
+2026-01,AUS01,5210,CC1200,180000,Operating,Cloud services
+2026-01,AUS01,5220,CC1200,45000,Operating,IT support
+2026-01,AUS01,5300,CC3000,75000,Operating,Professional services
+2026-01,AUS01,5310,CC3200,35000,Operating,Legal fees
+2026-01,AUS01,5320,CC3000,28000,Operating,Audit fees
+2026-01,AUS01,5400,CC2000,42000,Operating,Travel
+2026-01,AUS01,5410,CC2000,18000,Operating,Accommodation
+2026-01,AUS01,5420,CC2000,12000,Operating,Meals
+2026-01,AUS01,5500,CC2100,95000,Operating,Marketing campaigns
+2026-01,AUS01,5510,CC2100,65000,Operating,Advertising
+2026-01,AUS01,5520,CC2100,38000,Operating,Events
+2026-01,AUS01,5600,CC1200,15000,Operating,Telecommunications
+2026-01,AUS01,5610,CC3000,3500,Operating,Postage
+2026-01,AUS01,5620,CC3000,22000,Operating,Insurance
+2026-01,AUS01,5700,CC3100,18000,Operating,Training
+2026-01,AUS01,5710,CC3100,32000,Operating,Recruitment
+2026-02,AUS01,5000,CC1000,450000,Operating,Engineering salaries
+2026-02,AUS01,5000,CC1100,180000,Operating,Product Management salaries
+2026-02,AUS01,5000,CC2000,220000,Operating,Sales salaries
+2026-02,AUS01,5000,CC2100,150000,Operating,Marketing salaries
+2026-02,AUS01,5000,CC3000,120000,Operating,Finance salaries
+2026-02,AUS01,5010,CC1000,90000,Operating,Engineering benefits
+2026-02,AUS01,5010,CC1100,36000,Operating,Product benefits
+2026-02,AUS01,5010,CC2000,44000,Operating,Sales benefits
+2026-02,AUS01,5010,CC2100,30000,Operating,Marketing benefits
+2026-02,AUS01,5020,CC1000,120000,Operating,Contractor fees
+2026-02,AUS01,5100,CC1000,85000,Operating,Office rent
+2026-02,AUS01,5110,CC1000,12000,Operating,Utilities
+2026-02,AUS01,5120,CC1000,8000,Operating,Office supplies
+2026-02,AUS01,5200,CC1200,95000,Operating,Software licenses
+2026-02,AUS01,5210,CC1200,180000,Operating,Cloud services
+2026-02,AUS01,5220,CC1200,45000,Operating,IT support
+2026-02,AUS01,5300,CC3000,75000,Operating,Professional services
+2026-02,AUS01,5310,CC3200,35000,Operating,Legal fees
+2026-02,AUS01,5320,CC3000,28000,Operating,Audit fees
+2026-02,AUS01,5400,CC2000,42000,Operating,Travel
+2026-02,AUS01,5410,CC2000,18000,Operating,Accommodation
+2026-02,AUS01,5420,CC2000,12000,Operating,Meals
+2026-02,AUS01,5500,CC2100,95000,Operating,Marketing campaigns
+2026-02,AUS01,5510,CC2100,65000,Operating,Advertising
+2026-02,AUS01,5520,CC2100,38000,Operating,Events
+2026-02,AUS01,5600,CC1200,15000,Operating,Telecommunications
+2026-02,AUS01,5610,CC3000,3500,Operating,Postage
+2026-02,AUS01,5620,CC3000,22000,Operating,Insurance
+2026-02,AUS01,5700,CC3100,18000,Operating,Training
+2026-02,AUS01,5710,CC3100,32000,Operating,Recruitment

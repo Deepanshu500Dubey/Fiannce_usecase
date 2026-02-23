@@ -1,0 +1,11 @@
+Cost_Center,Cost_Center_Name,Department,Manager,Active
+CC1000,Engineering,Technology,Sarah Chen,Y
+CC1100,Product Management,Technology,Michael Torres,Y
+CC1200,IT Operations,Technology,James Wilson,Y
+CC2000,Sales,Revenue,Emma Davis,Y
+CC2100,Marketing,Revenue,Robert Kim,Y
+CC3000,Finance,Corporate,Lisa Anderson,Y
+CC3100,HR,Corporate,David Martinez,Y
+CC3200,Legal,Corporate,Jennifer Brown,Y
+CC4000,Customer Success,Operations,Thomas Lee,Y
+CC4100,Support,Operations,Maria Garcia,Y

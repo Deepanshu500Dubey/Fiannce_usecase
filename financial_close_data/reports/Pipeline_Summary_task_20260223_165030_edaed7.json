@@ -1,0 +1,24 @@
+{
+  "t001": {
+    "status": "success",
+    "rows_processed": 4080,
+    "anomalies_found": 96,
+    "output_files": {
+      "standardized_data": "financial_close_data\\working\\GL_Standardized_task_20260223_165030_edaed7.csv",
+      "anomalies": "financial_close_data\\reports\\Input_Anomalies_task_20260223_165030_edaed7.csv"
+    }
+  },
+  "t002": {
+    "output_file": "financial_close_data\\working\\GL_WithMappings_task_20260223_165030_edaed7.csv"
+  },
+  "t007": {
+    "total_actual": 92328819.93,
+    "total_budget": 96945260.92650001,
+    "total_variance": -4616440.9965,
+    "total_variance_pct": -5.0,
+    "suspense_amount": 0,
+    "future_dated_amount": 0,
+    "transaction_count": 4080,
+    "exception_count": 96
+  }
+}

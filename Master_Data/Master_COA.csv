@@ -1,0 +1,29 @@
+Account_Code,Account_Name,Account_Type,Category,Active
+5000,Salaries and Wages,Expense,Personnel,Y
+5010,Employee Benefits,Expense,Personnel,Y
+5020,Contractor Fees,Expense,Personnel,Y
+5100,Office Rent,Expense,Facilities,Y
+5110,Utilities,Expense,Facilities,Y
+5120,Office Supplies,Expense,Facilities,Y
+5200,Software Licenses,Expense,IT,Y
+5210,Cloud Services,Expense,IT,Y
+5220,IT Support,Expense,IT,Y
+5300,Professional Services,Expense,External,Y
+5310,Legal Fees,Expense,External,Y
+5320,Audit Fees,Expense,External,Y
+5400,Travel,Expense,T&E,Y
+5410,Accommodation,Expense,T&E,Y
+5420,Meals and Entertainment,Expense,T&E,Y
+5500,Marketing,Expense,Sales,Y
+5510,Advertising,Expense,Sales,Y
+5520,Events,Expense,Sales,Y
+5600,Telecommunications,Expense,Operations,Y
+5610,Postage and Courier,Expense,Operations,Y
+5620,Insurance,Expense,Operations,Y
+5700,Training,Expense,Development,Y
+5710,Recruitment,Expense,Development,Y
+5800,Depreciation,Expense,Non-Cash,Y
+5810,Amortization,Expense,Non-Cash,Y
+5900,Bank Charges,Expense,Finance,Y
+5910,Interest Expense,Expense,Finance,Y
+5920,FX Loss,Expense,Finance,Y

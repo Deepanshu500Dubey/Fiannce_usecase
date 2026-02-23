@@ -1,0 +1,41 @@
+Vendor_ID,Vendor_Name_Canonical,Vendor_Type,Country,Payment_Terms,Active
+V001,Amazon Web Services,Cloud Provider,USA,Net 30,Y
+V002,Microsoft Corporation,Software Vendor,USA,Net 30,Y
+V003,Salesforce Inc,Software Vendor,USA,Net 30,Y
+V004,Google Cloud,Cloud Provider,USA,Net 30,Y
+V005,Atlassian,Software Vendor,Australia,Net 30,Y
+V006,Slack Technologies,Software Vendor,USA,Net 30,Y
+V007,Zoom Video Communications,Software Vendor,USA,Net 30,Y
+V008,Adobe Systems,Software Vendor,USA,Net 30,Y
+V009,Oracle Corporation,Software Vendor,USA,Net 30,Y
+V010,SAP SE,Software Vendor,Germany,Net 30,Y
+V011,Workday Inc,Software Vendor,USA,Net 30,Y
+V012,ServiceNow,Software Vendor,USA,Net 30,Y
+V013,Accenture,Professional Services,Global,Net 45,Y
+V014,Deloitte,Professional Services,Global,Net 45,Y
+V015,PwC,Professional Services,Global,Net 45,Y
+V016,KPMG,Professional Services,Global,Net 45,Y
+V017,EY,Professional Services,Global,Net 45,Y
+V018,McKinsey & Company,Consulting,Global,Net 45,Y
+V019,Boston Consulting Group,Consulting,Global,Net 45,Y
+V020,Bain & Company,Consulting,Global,Net 45,Y
+V021,WeWork,Facilities,Global,Net 30,Y
+V022,Regus,Facilities,Global,Net 30,Y
+V023,JLL,Facilities,Global,Net 30,Y
+V024,CBRE,Facilities,Global,Net 30,Y
+V025,Cushman & Wakefield,Facilities,Global,Net 30,Y
+V026,FedEx,Logistics,USA,Net 15,Y
+V027,DHL,Logistics,Germany,Net 15,Y
+V028,UPS,Logistics,USA,Net 15,Y
+V029,TNT,Logistics,Netherlands,Net 15,Y
+V030,Australia Post,Logistics,Australia,Net 15,Y
+V031,Telstra,Telecommunications,Australia,Net 30,Y
+V032,Optus,Telecommunications,Australia,Net 30,Y
+V033,Vodafone,Telecommunications,Global,Net 30,Y
+V034,LinkedIn,Recruitment,USA,Net 30,Y
+V035,Indeed,Recruitment,USA,Net 30,Y
+V036,Seek,Recruitment,Australia,Net 30,Y
+V037,Hays Recruitment,Recruitment,Global,Net 30,Y
+V038,Robert Half,Recruitment,Global,Net 30,Y
+V039,Randstad,Recruitment,Global,Net 30,Y
+V040,Manpower,Recruitment,Global,Net 30,Y

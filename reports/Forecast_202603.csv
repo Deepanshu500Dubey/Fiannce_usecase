@@ -1,0 +1,2 @@
+next_period,next_month,next_year,forecast_amount,lower_bound,upper_bound,confidence_level,method,historical_months_used,avg_growth_rate,seasonal_factor,current_actual,recent_avg
+2026-03,3,2026,37506727.629614666,36256439.8857628,38757015.37346653,0.95,"Blended (70% trend, 30% current)",52,0.01013506635191669,0.8188334235193109,42280357.39080003,41871929.98372478

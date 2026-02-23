@@ -1,0 +1,45 @@
+================================================================================
+EXECUTIVE NARRATIVE - 2026-02
+================================================================================
+
+FINANCIAL SUMMARY
+----------------------------------------
+Total spend for 2026-02 was $42,280,357.39, which is significantly above budget of $2,363,500.00. The variance is $39,916,857.39 (1688.9%).
+
+KEY VARIANCE DRIVERS
+----------------------------------------
+Positive variances (over budget):
+  • 5320: +$1,773,781.46 (6334.9%)
+  • 5620: +$1,747,895.35 (7945.0%)
+  • 5420: +$1,736,587.86 (14471.6%)
+
+EXCEPTION SUMMARY
+----------------------------------------
+Total exceptions: 2884
+  • Critical: 0
+  • High: 0
+  • Medium: 2884
+
+Most common exceptions:
+  • EX001: 1268 occurrences
+  • EX004: 743 occurrences
+  • EX002: 296 occurrences
+
+DATA QUALITY IMPACT
+----------------------------------------
+Transactions with data quality issues: $4,566,499.80 (10.8% of total)
+  • Invalid accounts (in suspense): $834,162.81
+  • Future-dated transactions: $3,732,336.99
+
+CURRENCY EXPOSURE
+----------------------------------------
+Foreign currency exposure: $34,685,244.77 (82.0% of total)
+  • GBP: $14,801,038.44
+  • NZD: $6,978,146.26
+  • USD: $12,906,060.07
+
+RECOMMENDATIONS
+----------------------------------------
+• Review and remap transactions with invalid account codes
+• Reclassify future-dated transactions to correct period
+• Schedule data quality workshop to address root causes

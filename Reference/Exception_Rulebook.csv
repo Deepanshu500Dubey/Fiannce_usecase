@@ -1,0 +1,12 @@
+Rule_ID,Rule_Name,Rule_Description,Severity,Category,Auto_Fix_Available,Requires_Approval
+R001,Missing Cost Center,Cost_Center_Raw is NULL or empty,High,Data Quality,N,Y
+R002,Invalid Cost Center,Cost_Center_Raw does not exist in Master_CostCenters,High,Data Quality,N,Y
+R003,Invalid Account Code,Account_Code_Raw does not exist in Master_COA,High,Data Quality,N,Y
+R004,Vendor Not Recognized,Vendor_Name_Raw cannot be resolved via Vendor_Alias_Map or Master_Vendors,Medium,Data Quality,N,Y
+R005,Potential Duplicate Invoice,Same Vendor_Name_Raw + Invoice_Number appears multiple times,High,Data Quality,N,Y
+R006,Unexpected Negative Expense,Amount < 0 for expense account types,Medium,Business Logic,N,Y
+R007,Missing Tax Code,Tax_Code is NULL or empty,Medium,Compliance,N,N
+R008,Large Expense Requires Approval,Amount > 50000 AUD equivalent,High,Business Logic,N,Y
+R009,Unparseable Posting Date,Posting_Date_Raw cannot be parsed to valid date,Critical,Data Quality,N,Y
+R010,Unsupported Currency / Missing FX,Currency not in FX_Rates for the fiscal period,High,Data Quality,N,Y
+R011,Fiscal Period Mismatch,Posting_Date does not fall within the stated Fiscal_Period,Medium,Data Quality,N,N

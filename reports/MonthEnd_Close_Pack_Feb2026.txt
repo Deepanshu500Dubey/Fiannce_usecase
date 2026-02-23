@@ -1,0 +1,50 @@
+================================================================================
+MONTH-END CLOSE PACK - 2026-02
+================================================================================
+
+EXECUTIVE SUMMARY
+----------------------------------------
+Period: 2026-02
+Generated: 2026-02-22 23:27:18.886221
+Total Transactions: 1,382
+Total Spend: $42,280,357.39
+Total Budget: $2,363,500.00
+Variance: $39,916,857.39 (1688.9%)
+Data Quality Score: 83.9/100
+
+TOP EXCEPTIONS BY VALUE
+----------------------------------------
+• EX004: 743 occurrences, $51,658,459.34
+• EX001: 1268 occurrences, $38,699,520.50
+• EX002: 296 occurrences, $9,010,456.24
+• EX009: 144 occurrences, $3,934,636.44
+• EX007: 131 occurrences, $3,732,336.99
+
+TOP 10 VENDORS
+----------------------------------------
+• Amazon Web Services: $3,169,309.21 (90 txns)
+• Microsoft Corporation: $2,617,330.25 (79 txns)
+• Google Cloud: $1,873,156.45 (64 txns)
+• Boston Consulting Group: $1,839,863.47 (49 txns)
+• Deloitte: $1,676,911.41 (55 txns)
+• Regus: $1,580,231.67 (46 txns)
+• LinkedIn: $1,557,118.10 (54 txns)
+• FedEx: $1,542,096.50 (45 txns)
+• Accenture: $1,419,745.17 (40 txns)
+• Workday Inc: $1,402,768.26 (50 txns)
+
+CURRENCY EXPOSURE
+----------------------------------------
+• AUD: 341 txns, Original: $7,595,112.62, AUD: $7,595,112.62
+• EUR: 12 txns, Original: $354,820.60, AUD: $0.00
+• GBP: 348 txns, Original: $7,570,863.65, AUD: $14,801,038.44
+• NZD: 335 txns, Original: $7,487,281.40, AUD: $6,978,146.26
+• USD: 346 txns, Original: $8,462,990.21, AUD: $12,906,060.07
+
+SOURCE SYSTEMS
+----------------------------------------
+• Workday: $9,649,179.04 (302 txns)
+• Manual Entry: $9,583,135.23 (283 txns)
+• SAP: $8,629,827.34 (282 txns)
+• API Import: $7,590,008.81 (260 txns)
+• Oracle: $6,828,206.97 (255 txns)
